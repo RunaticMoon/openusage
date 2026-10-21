@@ -52,6 +52,9 @@ func (p *Provider) Collect(ctx context.Context, opts shared.TelemetryCollectOpti
 	baselineInitialFiles := baselineExisting && !p.telemetryBaselineInitialized
 	p.telemetryBaselineInitialized = true
 	if len(fileInfos) == 0 {
+		if opts.PerformanceEnabled && p.nativeTiming[codexTimingScope(sessionsDir, accountID, codexLogsPath(opts, sessionsDir))] != nil {
+			return p.enrichNativeTiming(ctx, opts, sessionsDir, accountID, nil), nil
+		}
 		return nil, nil
 	}
 
@@ -63,7 +66,7 @@ func (p *Provider) Collect(ctx context.Context, opts shared.TelemetryCollectOpti
 		}
 		cacheKey := path
 		if opts.PerformanceEnabled {
-			cacheKey += "|performance:true"
+			cacheKey += "|performance:" + codexTimingScope(sessionsDir, accountID, codexLogsPath(opts, sessionsDir))
 		}
 		if entry, ok := p.telemetryCache[cacheKey]; ok && (!opts.PerformanceEnabled || entry.sourceInfo == nil || os.SameFile(entry.sourceInfo, info)) {
 			// Codex session logs are append-only. Some filesystem activity can
@@ -155,6 +158,9 @@ func (p *Provider) Collect(ctx context.Context, opts shared.TelemetryCollectOpti
 	}
 	for path, entry := range pendingCache {
 		p.telemetryCache[path] = entry
+	}
+	if opts.PerformanceEnabled {
+		out = p.enrichNativeTiming(ctx, opts, sessionsDir, accountID, out)
 	}
 	return out, nil
 }
@@ -368,6 +374,7 @@ func ParseTelemetrySessionFile(path string, performanceEnabled ...bool) ([]share
 
 type telemetryParserState struct {
 	performanceEnabled bool
+	cliVersion         string
 	sessionID          string
 	model              string
 	upstreamProviderID string
@@ -417,6 +424,7 @@ func applyTelemetrySessionMeta(state *telemetryParserState, meta *sessionMetaPay
 		state.workspaceID = ws
 	}
 	state.clientSource = strings.TrimSpace(meta.Source)
+	state.cliVersion = strings.TrimSpace(meta.CLIVersion)
 	state.clientOriginator = strings.TrimSpace(meta.Originator)
 	state.clientName = classifyClient(state.clientSource, state.clientOriginator)
 }
