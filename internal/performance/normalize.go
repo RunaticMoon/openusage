@@ -81,6 +81,13 @@ func NormalizeRequest(input core.PerformanceRequest) core.PerformanceRequest {
 		return exclude(core.TimingMissing, "final_request_timing_unconfirmed")
 	}
 	switch r.TimingStatus {
+	case core.TimingMissing:
+		// A source can identify a completed request while its independently
+		// collected clock is still missing. Preserve the sanitized diagnostic
+		// so late metadata, retention gaps and unsupported clocks differ.
+		if r.DurationMS == nil && (r.StartedAt == nil || r.EndedAt == nil) && len(priorReason) > 0 {
+			return exclude(core.TimingMissing, priorReason[0])
+		}
 	case core.TimingInvalid, core.TimingAmbiguous, core.TimingUnsupported:
 		if len(priorReason) > 0 {
 			return exclude(r.TimingStatus, priorReason[0])
