@@ -72,6 +72,14 @@ func NormalizeRequest(input core.PerformanceRequest) core.PerformanceRequest {
 	if r.Scope != core.ScopeModelRequest {
 		return exclude(core.TimingUnsupported, "not_model_request")
 	}
+	// A partial observation's end is not the final request end. If a merged
+	// or external record claims finality while retaining provisional timing,
+	// keep the final candidate but require independent final timing evidence.
+	if r.Final && (r.TimingStatus == core.TimingProvisional || (len(priorReason) > 0 && priorReason[0] == "final_request_timing_unconfirmed" && r.EndedAt == nil && r.DurationMS == nil)) {
+		r.EndedAt = nil
+		r.DurationMS = nil
+		return exclude(core.TimingMissing, "final_request_timing_unconfirmed")
+	}
 	switch r.TimingStatus {
 	case core.TimingInvalid, core.TimingAmbiguous, core.TimingUnsupported:
 		if len(priorReason) > 0 {
@@ -192,28 +200,26 @@ func PreferRequest(current, incoming core.PerformanceRequest) core.PerformanceRe
 		result.SessionID = a.SessionID
 	}
 	if result.OutputTokens == nil {
-		if a.OutputTokens != nil {
+		if a.OutputTokens != nil && (!result.Final || a.Final) {
 			v := *a.OutputTokens
 			result.OutputTokens = &v
 			result.OutputBasis = a.OutputBasis
 		}
-		if b.OutputTokens != nil {
+		if b.OutputTokens != nil && (!result.Final || b.Final) {
 			v := *b.OutputTokens
 			result.OutputTokens = &v
 			result.OutputBasis = b.OutputBasis
 		}
 	}
 	timing := a
-	if timingQuality(b) > timingQuality(a) || (timingQuality(b) == timingQuality(a) && newer) {
+	if result.Final && !a.Final {
+		timing = b
+	} else if (!result.Final || b.Final) && (timingQuality(b) > timingQuality(a) || (timingQuality(b) == timingQuality(a) && newer)) {
 		timing = b
 	}
 	result.StartedAt, result.EndedAt, result.DurationMS = timing.StartedAt, timing.EndedAt, timing.DurationMS
 	result.TimingBasis, result.TimingStatus = timing.TimingBasis, timing.TimingStatus
 	result.Scope = timing.Scope
 	result.ExclusionReason, result.Evidence = timing.ExclusionReason, timing.Evidence
-	// Provisional describes the observation, not immutable timing authority.
-	if result.Final && result.TimingStatus == core.TimingProvisional {
-		result.TimingStatus = core.TimingValid
-	}
 	return NormalizeRequest(result)
 }

@@ -404,7 +404,7 @@ func TestPerformanceIncrementalCacheCorrectionAndBackwardClock(t *testing.T) {
 		t.Fatalf("clock reversal lost cache: %v", err)
 	}
 	// Correct native interval into a period older than the cache's lower bound.
-	older := at.Add(-2 * time.Hour)
+	older := at.Add(-48 * time.Hour)
 	r = performanceFixture("request", 3000, 40000, older)
 	r.PerformanceOnly = true
 	r.Performance.Revision = 2
@@ -447,5 +447,56 @@ func TestPerformanceRollingPeriodUsesIncrementalCache(t *testing.T) {
 	}
 	if next.Summary.Coverage.Candidates != 1 || !next.Period.Start.Equal(q.Since) {
 		t.Fatal("rolling filter changed")
+	}
+}
+
+func TestPerformanceFinalizationDoesNotReusePartialCountersOrInterval(t *testing.T) {
+	for _, missing := range []string{"timing", "output"} {
+		t.Run(missing, func(t *testing.T) {
+			s, path := performanceTestStore(t, true)
+			at := time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
+			partial := performanceFixture("native", 100, 1000, at)
+			partial.PerformanceOnly = true
+			partial.Performance.Final = false
+			partial.Performance.Outcome = core.OutcomeUnknown
+			partial.Performance.TimingBasis = core.TimingInferredLogBoundary
+			ingestPerformance(t, s, partial)
+			q := PerformanceQuery{Source: "claude_code", Account: "personal", Since: at.Add(500 * time.Millisecond), Now: at.Add(2 * time.Second), IncludeWindow: true}
+			if _, err := QueryPerformance(context.Background(), path, q); err != nil {
+				t.Fatal(err)
+			}
+			final := performanceFixture("native", 200, 2000, at.Add(time.Second))
+			final.PerformanceOnly = true
+			final.Performance.Revision = 2
+			if missing == "timing" {
+				final.Performance.TimingBasis = core.TimingUnknown
+				final.Performance.TimingStatus = core.TimingMissing
+				final.Performance.StartedAt = nil
+				final.Performance.EndedAt = nil
+				final.Performance.DurationMS = nil
+			} else {
+				final.Performance.OutputTokens = nil
+			}
+			ingestPerformance(t, s, final)
+			// A later stronger-looking partial is still not final measurement evidence.
+			partial.Performance.Revision = 3
+			partial.Performance.TimingBasis = core.TimingProviderRequestTimestamps
+			ingestPerformance(t, s, partial)
+			for _, cold := range []bool{false, true} {
+				if cold {
+					performanceCache.Lock()
+					performanceCache.entries = make(map[string]*performanceCacheEntry)
+					performanceCache.order = nil
+					performanceCache.Unlock()
+				}
+				p, err := QueryPerformance(context.Background(), path, q)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if p.Summary.Coverage.Candidates != 1 || p.Summary.Coverage.Provisional != 0 || p.Summary.Coverage.Measured != 0 || p.Window.Latest60Seconds.OutputTokens != 0 || p.Window.Latest60Seconds.ProvisionalOutputTokens != 0 {
+					t.Fatalf("final missing %s incorrectly measured (cold=%v): %+v / %+v", missing, cold, p.Summary.Coverage, p.Window.Latest60Seconds)
+				}
+			}
+		})
 	}
 }

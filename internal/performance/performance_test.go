@@ -327,3 +327,58 @@ func BenchmarkBuild1000(b *testing.B) {
 		})
 	}
 }
+
+func TestFinalMeasurementsNeverBorrowPartialCountersOrEnd(t *testing.T) {
+	partial := request("id", 100, time.Second)
+	partial.Final = false
+	partial.Outcome = core.OutcomeUnknown
+	partial.TimingBasis = core.TimingInferredLogBoundary
+	final := request("id", 200, 2*time.Second)
+	final.Revision = 1
+	final.TimingBasis = core.TimingUnknown
+	final.StartedAt = nil
+	final.EndedAt = nil
+	final.DurationMS = nil
+	final.RecordedAt = testNow
+	got := PreferRequest(partial, final)
+	if !got.Final || got.ResponseTokS != nil || got.TimingStatus == core.TimingProvisional {
+		t.Fatal("partial end promoted to final measurement")
+	}
+	s, err := Build([]core.PerformanceRequest{partial, final}, options())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Summary.Coverage.Candidates != 1 || s.Summary.Coverage.Excluded != 1 || s.Summary.Coverage.Provisional != 0 {
+		t.Fatal("final candidate lost")
+	}
+	final = request("id", 200, 2*time.Second)
+	final.Revision = 1
+	final.OutputTokens = nil
+	got = PreferRequest(partial, final)
+	if got.OutputTokens != nil || got.ResponseTokS != nil {
+		t.Fatal("partial output promoted to final output")
+	}
+	partial.Revision = 5
+	partial.TimingBasis = core.TimingProviderRequestTimestamps
+	got = PreferRequest(final, partial)
+	if !got.Final || got.OutputTokens != nil || got.ResponseTokS != nil {
+		t.Fatal("late partial enriched final measurement")
+	}
+	contradictory := request("contradictory", 100, time.Second)
+	contradictory.TimingStatus = core.TimingProvisional
+	got = NormalizeRequest(contradictory)
+	if got.TimingStatus != core.TimingMissing || got.EndedAt != nil || got.DurationMS != nil || got.ResponseTokS != nil {
+		t.Fatal("contradictory final/provisional record trusted")
+	}
+	if !reflect.DeepEqual(got, NormalizeRequest(got)) {
+		t.Fatal("contradictory normalization not idempotent")
+	}
+	enriched := got.DeepClone()
+	enriched.EndedAt = ptr(testNow)
+	enriched.TimingStatus = core.TimingValid
+	recovered := NormalizeRequest(enriched)
+	near(t, recovered.ResponseTokS, 100)
+	if recovered.ExclusionReason != "" {
+		t.Fatal("derived missing reason blocked later final timing")
+	}
+}

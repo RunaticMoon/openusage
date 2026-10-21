@@ -142,6 +142,10 @@ func (s *Store) upsertPerformance(ctx context.Context, tx *sql.Tx, req IngestReq
 		}
 		if r.EndedAt != nil {
 			occurred = r.EndedAt.UnixMilli()
+		} else if !r.RecordedAt.IsZero() {
+			// A promoted final record without request timing still has its
+			// own source event time; do not keep the partial observation's day.
+			occurred = r.RecordedAt.UnixMilli()
 		} else {
 			occurred = oldOccurred
 		}
@@ -187,7 +191,12 @@ func mergePerformanceObservation(old, in core.PerformanceRequest) core.Performan
 		out.OutputBasis = in.OutputBasis
 	}
 	oldRank, newRank := performanceTimingRank(old), performanceTimingRank(in)
-	useNewTiming := (newRank > oldRank) || (replace && in.TimingBasis == old.TimingBasis && newRank >= oldRank && in.TimingStatus != core.TimingMissing)
+	// A partial interval ends before the request is settled. Final output must
+	// never use that partial end, even when its timing basis ranks higher.
+	useNewTiming := (!out.Final || in.Final) && ((newRank > oldRank) || (replace && in.TimingBasis == old.TimingBasis && newRank >= oldRank && in.TimingStatus != core.TimingMissing))
+	if out.Final && !old.Final {
+		useNewTiming = true
+	}
 	if useNewTiming {
 		out.StartedAt = in.DeepClone().StartedAt
 		out.EndedAt = in.DeepClone().EndedAt
