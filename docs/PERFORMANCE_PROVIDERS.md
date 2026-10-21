@@ -27,6 +27,24 @@ this feature. Provider-level lack of observations is not evidence of zero
 traffic: the coverage denominator contains only identifiable request
 observations accepted by a performance adapter.
 
+## Meaning of the reported output basis
+
+`output_basis` identifies the counter's semantics as well as its source field:
+
+| Emitted basis | Meaning |
+| --- | --- |
+| `claude.message.usage.output_tokens` | The raw output counter reported in the native message, unchanged. The inspected local log does not independently establish thinking-token inclusion for every configured billing route. It is **not a promise of visible-text-only output**; no separate thinking/reasoning field is added or subtracted. |
+| `codex.token_usage_record.usage.output_tokens` | The per-response reported output counter, unchanged. In Codex 0.163.0's OpenAI Responses mapping, reasoning is a detail within the reported output count, so it is not added again. Custom provider semantics are retained as reported rather than inferred from a model name. This adapter currently has no trustworthy timing/success evidence, so it emits no measured speed. |
+| `opencode.tokens.output_excludes_reasoning` | The native OpenCode v2 output bucket excludes its separate reasoning bucket. Only that output bucket is the numerator, including explicit zero when reasoning is positive. |
+
+The pinned [Codex Responses conversion](https://github.com/openai/codex/blob/83086188ae0614bd882818ff1aa23f3194962012/codex-rs/codex-api/src/sse/responses.rs#L123)
+copies the wire output count directly and copies the reasoning breakdown into a
+separate detail field without adding it to output. The
+[OpenAI Responses usage contract](https://developers.openai.com/api/reference/resources/responses/methods/retrieve)
+defines reasoning as an output-token breakdown. These counters therefore must
+not be advertised as a uniform visible-text tokenizer measurement across
+providers. Coverage reports retain the output-basis breakdown for inspection.
+
 ## Zero, partial, failed and corrected observations
 
 An explicit `output=0` with valid request time and successful completion is a
