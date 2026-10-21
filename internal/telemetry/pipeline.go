@@ -15,6 +15,7 @@ type Pipeline struct {
 type FlushResult struct {
 	Processed int
 	Ingested  int
+	Updated   int
 	Deduped   int
 	Failed    int
 }
@@ -68,6 +69,9 @@ func (p *Pipeline) Flush(ctx context.Context, limit int) (FlushResult, error) {
 			continue
 		}
 
+		if ingestResult.Updated {
+			result.Updated++
+		}
 		if ingestResult.Deduped {
 			result.Deduped++
 		} else {
