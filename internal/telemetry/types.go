@@ -100,6 +100,7 @@ type CanonicalEvent struct {
 type IngestResult struct {
 	Status     string `json:"status"`
 	Deduped    bool   `json:"deduped"`
+	Updated    bool   `json:"updated,omitempty"`
 	EventID    string `json:"event_id"`
 	RawEventID string `json:"raw_event_id"`
 }

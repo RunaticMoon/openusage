@@ -112,11 +112,11 @@ func (s *Service) collectAndFlush(ctx context.Context) int {
 	// Detail past the hot window is downsampled into usage_rollup_daily and then
 	// pruned (see pruneOldData).
 	direct, retries := s.ingestBatch(ctx, allReqs)
-	if direct.ingested > 0 {
+	if direct.ingested > 0 || direct.updated > 0 {
 		s.markDataIngested()
 	}
 	flush, enqueued, flushWarnings := s.flushBacklog(ctx, retries, backlogFlushLimit)
-	if flush.Ingested > 0 {
+	if flush.Ingested > 0 || flush.Updated > 0 {
 		s.markDataIngested()
 	}
 	warnings = append(warnings, flushWarnings...)

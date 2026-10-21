@@ -60,7 +60,7 @@ func (s *Service) handleHook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tally, _ := s.ingestBatch(r.Context(), parsed.Requests)
-	if tally.ingested > 0 {
+	if tally.ingested > 0 || tally.updated > 0 {
 		s.markDataIngested()
 	}
 	warnings := append([]string(nil), parsed.Warnings...)

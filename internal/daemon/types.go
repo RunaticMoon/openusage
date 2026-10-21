@@ -153,6 +153,7 @@ func (c *readModelCache) endRefresh(cacheKey string) {
 type ingestTally struct {
 	processed int
 	ingested  int
+	updated   int
 	deduped   int
 	failed    int
 }

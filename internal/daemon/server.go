@@ -296,6 +296,9 @@ func (s *Service) ingestBatch(ctx context.Context, reqs []telemetry.IngestReques
 			retries = append(retries, req)
 			continue
 		}
+		if result.Updated {
+			tally.updated++
+		}
 		if result.Deduped {
 			tally.deduped++
 		} else {
@@ -442,6 +445,7 @@ func FlushInBatches(ctx context.Context, pipeline *telemetry.Pipeline, maxTotal 
 		batch, err := pipeline.Flush(ctx, batchLimit)
 		accum.Processed += batch.Processed
 		accum.Ingested += batch.Ingested
+		accum.Updated += batch.Updated
 		accum.Deduped += batch.Deduped
 		accum.Failed += batch.Failed
 
