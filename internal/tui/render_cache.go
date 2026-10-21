@@ -45,7 +45,13 @@ func (m *Model) cachedDetailContent(id string, snap core.UsageSnapshot, w int, a
 		strconv.FormatFloat(m.warnThreshold, 'f', 4, 64),
 		strconv.FormatFloat(m.critThreshold, 'f', 4, 64),
 		strconv.FormatBool(hideCosts),
+		performanceRenderKey(snap.Performance, m.viewNow()),
 	}, "|")
+	if snap.Performance != nil {
+		// The single-entry detail cache can refresh a rounded age without
+		// creating an unbounded family of tile-body cache entries.
+		key += "|" + performanceSourceAge(snap.Performance, m.viewNow())
+	}
 	if m.detailCache.key == key {
 		return m.detailCache.content
 	}

@@ -83,7 +83,33 @@ func New(cfg config.ExportConfig) (*Exporter, error) {
 func (e *Exporter) Ingest(snaps map[string]core.UsageSnapshot) {
 	cloned := make([]core.UsageSnapshot, 0, len(snaps))
 	for _, s := range snaps {
-		cloned = append(cloned, s)
+		clone := s.DeepClone()
+		if p := clone.Performance; p != nil {
+			// Transport identity is metadata, never part of a request's dedupe key.
+			// Enrich only our private copy; the read-model snapshot stays unchanged.
+			p.ExportIntervalMS = e.interval.Milliseconds()
+			if p.HostID == "" {
+				p.HostID = e.machine
+			}
+			for i := range p.Groups {
+				if p.Groups[i].HostID == "" {
+					p.Groups[i].HostID = e.machine
+				}
+			}
+			for i := range p.Requests {
+				if p.Requests[i].HostID == "" {
+					p.Requests[i].HostID = e.machine
+				}
+			}
+			if p.Window != nil {
+				for i := range p.Window.Session120Seconds {
+					if p.Window.Session120Seconds[i].HostID == "" {
+						p.Window.Session120Seconds[i].HostID = e.machine
+					}
+				}
+			}
+		}
+		cloned = append(cloned, clone)
 	}
 
 	e.mu.Lock()
