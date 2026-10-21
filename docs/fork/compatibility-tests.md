@@ -5,6 +5,19 @@ canonical revision/cache update, account/source projection, and SQLite safety pa
 integration gate for the combined candidate, not a claim that unmodified
 v0.26.1 understands OpenCode v2.
 
+The initial dependencies are fork PRs #1 (DB safety), #2 (SQLite v2), #3
+(canonical revisions), #5 (plugin v2) and #8 (account/source projection).
+All must be included in the combined candidate before approving this
+integration test branch.
+
+Fork CI runs the tagged suite automatically for pushes to `custom`. The
+upstream-sync and draft-release workflows explicitly enable it for their exact
+candidate SHA. A manual Fork CI dispatch can enable its boolean `integration`
+input for a combined candidate. Individual feature PRs and dispatches without
+that input run the ordinary suite, because an independent feature head can
+legitimately lack the other integration dependencies. Merge approval still
+requires the combined candidate's tagged suite to pass.
+
 Run the synthetic integration regression on that candidate:
 
 ```sh

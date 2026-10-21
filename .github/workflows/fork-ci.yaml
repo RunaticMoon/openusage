@@ -11,6 +11,10 @@ on:
         description: Full commit SHA to verify (empty means selected ref)
         type: string
         default: ''
+      integration:
+        description: Run the combined OpenCode source/reconciliation/Hub regression suite
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       candidate_sha:
@@ -20,6 +24,10 @@ on:
         required: false
         type: string
         default: ''
+      integration:
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -82,6 +90,11 @@ jobs:
           python3 -m unittest discover -s scripts/fork -p 'test_*.py' -v
       - name: Existing and regression tests with race detector
         run: go test -p 1 -race -count=1 ./...
+      - name: Combined OpenCode source, reconciliation and Hub regressions
+        if: github.event_name == 'push' || inputs.integration
+        run: |
+          test -f internal/daemon/opencode_compatibility_test.go
+          go test -p 1 -race -tags fork_integration -count=1 ./internal/daemon
       - name: Native build, execution, linkage and checksums
         shell: bash
         env:

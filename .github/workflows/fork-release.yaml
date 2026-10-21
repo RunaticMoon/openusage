@@ -57,6 +57,7 @@ jobs:
     with:
       candidate_sha: ${{ inputs.commit_sha }}
       version: ${{ needs.gate.outputs.version }}
+      integration: true
   draft:
     needs: [gate, verify]
     environment: fork-release
