@@ -15,12 +15,13 @@ import (
 )
 
 func (s *Service) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":                 "ok",
-		"daemon_version":         strings.TrimSpace(version.Version),
-		"api_version":            APIVersion,
-		"integration_version":    integrations.IntegrationVersion,
-		"provider_registry_hash": ProviderRegistryHash(),
+	writeJSON(w, http.StatusOK, HealthResponse{
+		Status:             "ok",
+		DaemonVersion:      strings.TrimSpace(version.Version),
+		APIVersion:         APIVersion,
+		IntegrationVersion: integrations.IntegrationVersion,
+		ProviderRegistry:   ProviderRegistryHash(),
+		Collectors:         s.collectorHealthSnapshot(),
 	})
 }
 

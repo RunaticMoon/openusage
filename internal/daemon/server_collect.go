@@ -98,7 +98,7 @@ func (s *Service) collectAndFlush(ctx context.Context) int {
 	warnings = append(warnings, collectorWarnings...)
 
 	for _, collector := range collectors {
-		reqs, err := collector.Collect(ctx)
+		reqs, err := s.collectWithHealth(ctx, collector)
 		if err != nil {
 			warnings = append(warnings, fmt.Sprintf("%s: %v", collector.Name(), err))
 			continue
