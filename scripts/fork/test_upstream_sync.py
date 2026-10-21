@@ -137,9 +137,10 @@ class SyncTests(unittest.TestCase):
         def fake_paged(path, key=None):
             return [] if key == "workflows" else prs
 
-        self.enterContext(patch("upstream_sync.run", side_effect=fake_run))
-        self.enterContext(patch("upstream_sync.api", side_effect=fake_api))
-        self.enterContext(patch("upstream_sync.paged", side_effect=fake_paged))
+        for name, replacement in (("run", fake_run), ("api", fake_api), ("paged", fake_paged)):
+            mocked = patch("upstream_sync." + name, side_effect=replacement)
+            mocked.start()
+            self.addCleanup(mocked.stop)
         return prs, writes
 
     def test_full_rerun_reuses_one_pr_and_exact_head(self):
