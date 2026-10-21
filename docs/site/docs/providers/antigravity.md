@@ -87,6 +87,6 @@ Existing rows produced by an older status-line revision implementation are not a
 - **Binary moved:** `openusage integrations list` reports an unavailable native command as outdated. `openusage integrations upgrade antigravity` updates the binary path while preserving the explicit state file.
 - **Unsupported data:** model attribution absent from a transcript remains unknown. No dollar spend, token-per-second metric, account-manager proxy history, or credential extraction is added.
 - **Local format changes:** the transcript reader supports the inspected CLI 1.4.3 schema. Unknown usage-bearing formats and partially reported counters fail closed. A trailing incomplete line waits for its newline; a changing file is retried. This is distinct from the documented status-line contract.
-- **Collection bounds:** the reader accepts at most 10,000 root entries, 64 MiB per file, 4 MiB per line, 256 MiB per collection and 100,000 events per collection. It refuses symlinked transcript components. Exceeding a bound reports a collection error without importing a partial batch.
+- **Collection bounds:** the reader accepts at most 10,000 root entries, 64 MiB per file, 4 MiB per line, 256 MiB per collection and 100,000 events per collection. Both individual and collection-wide token totals must fit the exact JSON integer range (2^53−1). It refuses symlinked transcript components. Exceeding a bound reports a collection error without importing a partial batch.
 
 [Gemini CLI](./gemini-cli.md) is a separate provider with a different local data format.
