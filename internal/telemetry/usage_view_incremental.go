@@ -335,6 +335,9 @@ func usageViewEventMatchesFilter(e usageViewEvent, filter usageFilter) bool {
 			break
 		}
 	}
+	if strings.TrimSpace(filter.SourceSystem) != "" {
+		found = strings.EqualFold(strings.TrimSpace(e.SourceSystem), strings.TrimSpace(filter.SourceSystem))
+	}
 	if !found || (strings.TrimSpace(filter.AccountID) != "" && strings.TrimSpace(e.AccountID) != strings.TrimSpace(filter.AccountID)) {
 		return false
 	}

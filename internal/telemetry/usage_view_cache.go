@@ -65,7 +65,7 @@ func usageViewCacheKey(namespace usageViewCacheNamespace, filter usageFilter) st
 	if !filter.TodaySince.IsZero() {
 		today = filter.TodaySince.UTC().UnixNano()
 	}
-	return fmt.Sprintf("%s|%s|%s|%s|%d|%d", namespace, providers, strings.TrimSpace(filter.AccountID), windowKey, since, today)
+	return fmt.Sprintf("%s|%s|%s|%s|%s|%d|%d", namespace, providers, strings.TrimSpace(filter.SourceSystem), strings.TrimSpace(filter.AccountID), windowKey, since, today)
 }
 
 func (s *usageViewCacheStore) lookup(key string) (*usageViewCacheEntry, bool) {
@@ -103,6 +103,20 @@ func (s *usageViewCacheStore) reset() {
 // driven: the cache key already includes Since, so an entry only matches when
 // Since is identical between builder and reader.
 func probeUsageEventsFingerprint(ctx context.Context, db *sql.DB, filter usageFilter) (int64, int64, error) {
+	if strings.TrimSpace(filter.SourceSystem) != "" {
+		// Preserve the source/account boundary for cache invalidation too.
+		// As in the provider query below, ignore the moving window cutoff.
+		filter.Since = time.Time{}
+		where, args := usageWhereClause("e", filter)
+		var maxRowID, count int64
+		err := db.QueryRowContext(ctx, `SELECT COALESCE(MAX(e.rowid),0),COUNT(*)
+			FROM usage_events e JOIN usage_raw_events r ON r.raw_event_id=e.raw_event_id
+			WHERE e.event_type IN ('message_usage','tool_usage') AND `+where, args...).Scan(&maxRowID, &count)
+		if err != nil {
+			return 0, 0, fmt.Errorf("probe source usage_events fingerprint: %w", err)
+		}
+		return maxRowID, count, nil
+	}
 	providers := normalizeProviderIDs(filter.ProviderIDs)
 	if len(providers) == 0 {
 		return 0, 0, nil

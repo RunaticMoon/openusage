@@ -149,12 +149,22 @@ func usageWhereClause(alias string, filter usageFilter) (string, []any) {
 		prefix = strings.TrimSpace(alias) + "."
 	}
 	providerIDs := normalizeProviderIDs(filter.ProviderIDs)
-	if len(providerIDs) == 0 {
+	sourceSystem := strings.TrimSpace(filter.SourceSystem)
+	if len(providerIDs) == 0 && sourceSystem == "" {
 		return prefix + "provider_id = ''", nil
 	}
 	where := ""
 	args := make([]any, 0, len(providerIDs)+1)
-	if len(providerIDs) == 1 {
+	if sourceSystem != "" {
+		// The joined query uses e/r aliases; the incremental subquery exposes
+		// source_system directly alongside the canonical event columns.
+		sourcePrefix := ""
+		if prefix != "" {
+			sourcePrefix = "r."
+		}
+		where = sourcePrefix + "source_system = ?"
+		args = append(args, sourceSystem)
+	} else if len(providerIDs) == 1 {
 		where = prefix + "provider_id = ?"
 		args = append(args, providerIDs[0])
 	} else {

@@ -142,7 +142,10 @@ type telemetryUsageAgg struct {
 }
 
 type usageFilter struct {
-	ProviderIDs     []string
+	ProviderIDs []string
+	// SourceSystem selects a tool's own events while preserving model vendor IDs.
+	// When set, it replaces ProviderIDs as the source selector.
+	SourceSystem    string
 	AccountID       string
 	Since           time.Time
 	TodaySince      time.Time
@@ -208,6 +211,25 @@ func applyCanonicalUsageViewWithDB(
 		accountScope := strings.TrimSpace(s.AccountID)
 		if accountScope == "" {
 			accountScope = strings.TrimSpace(accountID)
+		}
+		if strings.EqualFold(providerID, "opencode") && accountScope != "" {
+			// OpenCode's provider_id is the model vendor, not the tool identity.
+			// Explicit accounts must never fall back to another profile's usage.
+			agg, err := loadUsageViewForFilter(ctx, db, cacheNamespace, usageFilter{
+				SourceSystem: "opencode", AccountID: accountScope,
+				Since: since, TodaySince: todaySince, WindowKey: timeWindow,
+			})
+			if err != nil {
+				return snaps, err
+			}
+			agg.Scope, agg.AccountID = "account", accountScope
+			windowLabel := core.TimeWindowAll
+			if !since.IsZero() && timeWindow != "" {
+				windowLabel = timeWindow
+			}
+			applyUsageViewToSnapshot(&s, agg, windowLabel)
+			out[accountID] = s
+			continue
 		}
 		sourceProviders := telemetrySourceProvidersForTarget(providerID, providerLinks)
 		if len(sourceProviders) == 0 {
