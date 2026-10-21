@@ -1,0 +1,96 @@
+name: Fork upstream sync
+
+on:
+  schedule:
+    - cron: '23 3 * * *' # 03:23 UTC / 12:23 Asia/Seoul; GitHub may delay runs.
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Optional full upstream commit SHA; default is latest stable release
+        type: string
+        default: ''
+      apply:
+        description: Push fast-forward mirror and prepare review PR (never merge/deploy)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.repository == 'RunaticMoon/openusage' && github.ref == 'refs/heads/custom'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: read
+      statuses: write
+    outputs:
+      candidate_sha: ${{ steps.sync.outputs.candidate_sha }}
+      pr_number: ${{ steps.sync.outputs.pr_number }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Prepare review candidate with trusted automation only
+        id: sync
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          APPLY: ${{ github.event_name == 'schedule' || inputs.apply }}
+        shell: bash
+        run: |
+          gh auth setup-git
+          args=()
+          if [ "$APPLY" = true ]; then args+=(--apply); fi
+          if [ -n "$CANDIDATE_SHA" ]; then args+=(--candidate-sha "$CANDIDATE_SHA"); fi
+          python3 scripts/fork/upstream_sync.py "${args[@]}"
+      - name: Mark exact candidate validation pending
+        if: steps.sync.outputs.pr_number != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.sync.outputs.candidate_sha }}
+        run: |
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$SHA" \
+            -f state=pending -f context=fork-sync/verified \
+            -f description='Native ARM64 tests and builds are running for this SHA' \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+  verify:
+    needs: prepare
+    if: needs.prepare.outputs.pr_number != ''
+    permissions:
+      contents: read
+    uses: ./.github/workflows/fork-ci.yaml
+    with:
+      candidate_sha: ${{ needs.prepare.outputs.candidate_sha }}
+  report:
+    needs: [prepare, verify]
+    if: always() && needs.prepare.outputs.pr_number != ''
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write
+    steps:
+      # No checkout or candidate code in this write-permission job.
+      - name: Attach result to the exact PR head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ needs.prepare.outputs.candidate_sha }}
+          PR: ${{ needs.prepare.outputs.pr_number }}
+          RESULT: ${{ needs.verify.result }}
+        run: |
+          actual=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq .head.sha)
+          state=failure
+          if [ "$RESULT" = success ] && [ "$actual" = "$SHA" ]; then state=success; fi
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$SHA" \
+            -f state="$state" -f context=fork-sync/verified \
+            -f description="Native ARM64 verification: $RESULT; exact PR head checked" \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          test "$state" = success
