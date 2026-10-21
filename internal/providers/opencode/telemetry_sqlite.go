@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -19,24 +21,42 @@ func CollectTelemetryFromSQLite(ctx context.Context, dbPath string) ([]shared.Te
 		return nil, nil
 	}
 	if _, err := os.Stat(dbPath); err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
 		return nil, fmt.Errorf("stat opencode sqlite db: %w", err)
 	}
 
-	db, err := sql.Open("sqlite3", dbPath)
+	absPath, err := filepath.Abs(dbPath)
+	if err != nil {
+		return nil, err
+	}
+	// A live OpenCode database must keep SQLite's WAL/locking semantics. Never
+	// use immutable=1 or a read-write connection against the source database.
+	u := url.URL{Scheme: "file", Path: filepath.ToSlash(absPath)}
+	u.RawQuery = "mode=ro&_busy_timeout=1000&_query_only=1"
+	db, err := sql.Open("sqlite3", u.String())
 	if err != nil {
 		return nil, err
 	}
 	defer db.Close()
+	db.SetMaxOpenConns(1)
+	// Every schema and data query uses one consistent read transaction.
+	if _, err := db.ExecContext(ctx, "BEGIN"); err != nil {
+		return nil, fmt.Errorf("begin opencode read snapshot: %w", err)
+	}
+	defer func() { _, _ = db.Exec("ROLLBACK") }()
+	schema, err := identifySQLiteSchema(ctx, db)
+	if err != nil {
+		return nil, err
+	}
+	if schema == "v2" {
+		return collectSQLiteV2Events(ctx, db, dbPath)
+	}
 
 	hasMessageTable, err := sqliteTableExists(ctx, db, "message")
 	if err != nil {
 		return nil, err
 	}
 	if !hasMessageTable {
-		return nil, nil
+		return nil, ErrUnsupportedSQLiteSchema
 	}
 
 	partSummaryByMessage := make(map[string]partSummary)
