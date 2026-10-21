@@ -190,7 +190,14 @@ func TestPerformanceRealCodexReadOnlyToHub(t *testing.T) {
 	// The native reader intentionally bounds each pass. Always take one warm
 	// sample, then advance only while no retained interval metadata exists.
 	// Live accounting additions are ingested into both isolated stores.
-	for attempt := 0; attempt < 8; attempt++ {
+	// Soft page deadlines can require more passes than the row-limit quotient
+	// under race instrumentation or host load. This test-only bound permits
+	// catch-up without relaxing the production scan budget or inference guards.
+	catchupLimit := 8
+	if os.Getenv("OPENUSAGE_PERFORMANCE_REAL_CODEX_REQUIRE_INTERVAL") == "1" {
+		catchupLimit = 64
+	}
+	for attempt := 0; attempt < catchupLimit; attempt++ {
 		started = time.Now()
 		warm, err := collector.Collect(ctx)
 		elapsed := time.Since(started)
