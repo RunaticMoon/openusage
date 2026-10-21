@@ -93,3 +93,20 @@ The operations helper's SQLite/staging/rollback regressions are synthetic and
 mock service management. They preserve OpenCode source DBs and default to dry
 run. Native systemd/launchd canary success and real collection remain separate
 deployment evidence.
+
+## Upstream sync activation evidence
+
+After the approved automation merge `8b024fb885965d6973d8fa8b2be875ee577e0488`,
+the [default manual sync run](https://github.com/RunaticMoon/openusage/actions/runs/39532795614)
+passed with the stable release already included. The explicit upstream-main
+[manual run](https://github.com/RunaticMoon/openusage/actions/runs/39532798400)
+prepared [draft sync PR #7](https://github.com/RunaticMoon/openusage/pull/7)
+for upstream `430a1d39814d458e972cf4dce98135d6e786992c`. Its native CI result
+must be checked separately; PR creation is not test success or merge approval.
+
+A subsequent real read-only CLI run with that same candidate returned
+`apply: false` and identical `candidate_sha` / `previous_candidate_sha`, both
+`9927ddeaade241e982c79626cf684084a75a83f9`. This verifies reuse of the existing
+candidate without creating another commit or writing remote refs. No automatic
+merge or deployment followed. Future sync runs must preserve human changes to
+that branch and test the exact candidate SHA before any review decision.
