@@ -69,6 +69,7 @@ jobs:
     uses: ./.github/workflows/fork-ci.yaml
     with:
       candidate_sha: ${{ needs.prepare.outputs.candidate_sha }}
+      integration: true
   report:
     needs: [prepare, verify]
     if: always() && needs.prepare.outputs.pr_number != ''
