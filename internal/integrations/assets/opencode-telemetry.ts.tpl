@@ -455,6 +455,46 @@ const OpenUsageTelemetry: Plugin = async () => {
 }
 
 
+// Missing counters are unknown, not zero. Refuse malformed numeric values
+// instead of inventing usage or partially accepting a corrupt terminal event.
+function normalizeV2Usage(data: AnyRecord): AnyRecord | undefined {
+  const result: AnyRecord = {}
+  let known = false
+  let subtotal = 0
+  if ("tokens" in data) {
+    const tokens = asRecord(data.tokens)
+    if (!tokens || Array.isArray(tokens)) return
+    const cleanTokens: AnyRecord = {}
+    const copy = (from: AnyRecord, to: AnyRecord, keys: string[]): boolean => {
+      for (const key of keys) {
+        if (!(key in from)) continue
+        const value = from[key]
+        if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) return false
+        subtotal += value
+        if (!Number.isSafeInteger(subtotal)) return false
+        to[key] = value
+        known = true
+      }
+      return true
+    }
+    if (!copy(tokens, cleanTokens, ["input", "output", "reasoning"])) return
+    if ("cache" in tokens) {
+      const cache = asRecord(tokens.cache)
+      if (!cache || Array.isArray(cache)) return
+      const cleanCache: AnyRecord = {}
+      if (!copy(cache, cleanCache, ["read", "write"])) return
+      if (Object.keys(cleanCache).length) cleanTokens.cache = cleanCache
+    }
+    if (Object.keys(cleanTokens).length) result.tokens = cleanTokens
+  }
+  if ("cost" in data) {
+    if (typeof data.cost !== "number" || !Number.isFinite(data.cost) || data.cost < 0) return
+    result.cost = data.cost
+    known = true
+  }
+  return known ? result : undefined
+}
+
 // Native v2 events are global and contain prompts, responses and tool results.
 // Keep only completed per-message usage. Session usage.updated is cumulative
 // and must never be added to message totals. DB reconciliation fills gaps in
@@ -485,7 +525,6 @@ async function setup(ctx: any): Promise<(() => Promise<void>) | undefined> {
           if (event.type === "session.step.started") {
             starts.set(key, {
               model: normalizeModel(data.model), agent: pickString(data.agent),
-              started: pickInt(data.started, event.created),
             })
             if (starts.size > 2048) starts.delete(starts.keys().next().value!)
             continue
@@ -493,21 +532,15 @@ async function setup(ctx: any): Promise<(() => Promise<void>) | undefined> {
           if (event.type !== "session.step.ended" && event.type !== "session.step.failed") continue
           const start = starts.get(key)
           starts.delete(key)
-          const tokens = asRecord(data.tokens)
-          // A failed request may carry no usage. Do not turn it into a zero-
-          // usage "successful" request or synthesize counters from estimates.
-          if (!tokens) continue
-          const cache = asRecord(tokens.cache)
+          const usage = normalizeV2Usage(data)
+          // A failed request can have no counters at all. Keep unknown usage
+          // absent; explicit zeros and cost-only terminal usage remain valid.
+          if (!usage) continue
           const clean: AnyRecord = {
             sessionID, assistantMessageID: messageID,
             model: start?.model || {}, agent: start?.agent || "opencode",
-            tokens: {
-              input: pickInt(tokens.input), output: pickInt(tokens.output),
-              reasoning: pickInt(tokens.reasoning),
-              cache: { read: pickInt(cache?.read), write: pickInt(cache?.write) },
-            },
+            ...usage,
           }
-          if (typeof data.cost === "number" && Number.isFinite(data.cost)) clean.cost = data.cost
           await sendPayload(cfg, { event: {
             type: event.type, created: pickInt(event.created),
             location: { directory: pickString(asRecord(event.location)?.directory, asRecord(ctx.location)?.directory) },

@@ -35,7 +35,7 @@ that earlier contract without guessing the host from process arguments.
 
 The v2 subscription uses the public `ctx.event.subscribe({signal})` API. It
 records only terminal `session.step.ended` and `session.step.failed` events that
-actually include token usage. `session.step.started` supplies model/provider
+actually include token or cost usage. `session.step.started` supplies model/provider
 attribution in a bounded in-memory cache. The emitted allowlist contains stable
 session/message IDs, the event's workspace directory, timestamp, model/provider,
 agent, token components and optional cost. It never forwards prompts, responses,
@@ -43,7 +43,10 @@ native provider state, tool arguments/results, files or error bodies.
 
 `session.usage.updated` contains cumulative session totals and is ignored. Token
 totals follow the official v2 contract: input + output + reasoning + cache read +
-cache write. The original v1 hooks remain available for v1 hosts. Native v2 live tool events are not emitted by this patch; SQLite collection supplies tool usage.
+cache write. Missing component and cost fields remain unknown; explicit zero
+remains zero. For a partial event the existing normalizer reports the subtotal
+of known components, not a verified complete total. Malformed, negative, nonfinite,
+fractional or unsafe token counters are rejected, including unsafe subtotals. The original v1 hooks remain available for v1 hosts. Native v2 live tool events are not emitted by this patch; SQLite collection supplies tool usage.
 
 Native subscriptions are explicitly volatile: an overflow or disconnection can
 lose events. The plugin reconnects with bounded backoff and aborts its subscription
