@@ -34,9 +34,15 @@ if [[ "$(go env GOOS)" == linux ]]; then
 else
   otool -L "$output/openusage" > "$output/runtime-libraries.txt"
   otool -l "$output/openusage" > "$output/macho-load-commands.txt"
+  xcrun --show-sdk-version > "$output/sdk-version.txt"
 fi
 (cd "$output" && go version -m openusage) > "$output/go-build.txt"
 cc --version > "$output/c-compiler.txt"
+go env CC CXX CGO_CFLAGS CGO_LDFLAGS > "$output/cgo-config.txt"
+if [[ "$(git rev-parse HEAD)" != "$fork_sha" || -n "$(git status --porcelain --untracked-files=all)" ]]; then
+  echo 'Source checkout changed during build; refusing to certify the artifact' >&2
+  exit 1
+fi
 python3 - "$output" "$version" "$fork_sha" "$upstream_tag" "$upstream_sha" "$build_date" "$platform" <<'PY'
 import hashlib, json, pathlib, subprocess, sys
 out, version, sha, tag, upstream, date, platform = sys.argv[1:]
