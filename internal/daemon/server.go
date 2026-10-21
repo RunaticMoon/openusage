@@ -48,6 +48,9 @@ type Service struct {
 	pollStateMu sync.Mutex
 	pollState   map[string]*providerPollState // per-account change detection state
 
+	collectorHealthMu sync.RWMutex
+	collectorHealth   map[string]CollectorHealth
+
 	// clock provides the wall-clock used for snapshot timestamps and any
 	// state that needs to be reproducible in tests. Defaults to
 	// core.SystemClock{}; tests can override via WithClock.
