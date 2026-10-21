@@ -1,7 +1,7 @@
 import type { Plugin } from "@opencode-ai/plugin"
 // openusage-integration-version: __OPENUSAGE_INTEGRATION_VERSION__
 
-import { createConnection as netCreateConnection } from "node:net"
+import { request as httpRequest } from "node:http"
 import { existsSync, mkdirSync, writeFileSync, renameSync, readdirSync } from "node:fs"
 
 type RuntimeConfig = {
@@ -330,22 +330,42 @@ function resolveHookSpoolDir(): string {
 
 async function postToSocket(socketPath: string, path: string, body: string): Promise<boolean> {
   return new Promise((resolve) => {
-    const conn = netCreateConnection({ path: socketPath })
     let resolved = false
-    const done = (ok: boolean) => { if (!resolved) { resolved = true; resolve(ok) } }
-    conn.setTimeout(2000, () => { conn.destroy(); done(false) })
-    conn.on("error", () => done(false))
-    conn.on("connect", () => {
-      const req = `POST ${path} HTTP/1.0\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`
-      conn.write(req, () => { conn.destroy(); done(true) })
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const done = (ok: boolean) => {
+      if (!resolved) { resolved = true; clearTimeout(timer); req.destroy(); resolve(ok) }
+    }
+    const req = httpRequest({
+      socketPath, path, method: "POST", agent: false,
+      headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) },
+    }, response => {
+      if (!response.statusCode || response.statusCode < 200 || response.statusCode >= 300) { done(false); return }
+      let text = ""
+      response.setEncoding("utf8")
+      response.on("data", chunk => {
+        text += chunk
+        if (text.length > 65536) done(false)
+      })
+      response.on("error", () => done(false))
+      response.on("end", () => {
+        try {
+          // Native daemon acknowledges ingest failures with HTTP 200 too.
+          // Replay is safe because usage records carry stable dedup IDs.
+          const ack = asRecord(JSON.parse(text))
+          done(!!ack && typeof ack.processed === "number" && typeof ack.failed === "number" && ack.failed === 0)
+        } catch { done(false) }
+      })
     })
+    timer = setTimeout(() => done(false), 2000)
+    req.on("error", () => done(false))
+    req.end(body)
   })
 }
 
 async function spoolToDisk(source: string, accountID: string, payloadJSON: string, verbose: boolean): Promise<void> {
   const dir = resolveHookSpoolDir()
   try {
-    if (!existsSync(dir)) { mkdirSync(dir, { recursive: true }) }
+    if (!existsSync(dir)) { mkdirSync(dir, { recursive: true, mode: 0o700 }) }
     const files = readdirSync(dir).filter(f => f.endsWith(".json"))
     if (files.length >= 500) {
       if (verbose) { console.error("[openusage-telemetry] hook spool full (500 files)") }
@@ -357,7 +377,7 @@ async function spoolToDisk(source: string, accountID: string, payloadJSON: strin
     const dst = `${dir}/${ts}_${rnd}.json`
     // Build record via interpolation — avoids JSON.parse round-trip on payload
     const record = `{"source":${JSON.stringify(source)},"account_id":${JSON.stringify(accountID)},"payload":${payloadJSON}}`
-    writeFileSync(tmp, record + "\n")
+    writeFileSync(tmp, record + "\n", { mode: 0o600 })
     renameSync(tmp, dst)
   } catch (err) {
     if (verbose) { console.error(`[openusage-telemetry] spool write failed: ${err}`) }
@@ -391,7 +411,7 @@ async function sendPayload(cfg: RuntimeConfig, payload: unknown): Promise<void> 
   await spoolToDisk("opencode", cfg.accountID || "", payloadJSON, cfg.verbose)
 }
 
-export const OpenUsageTelemetry: Plugin = async () => {
+const OpenUsageTelemetry: Plugin = async () => {
   const cfg = loadConfig()
   if (!cfg.enabled) {
     return {}
@@ -434,4 +454,85 @@ export const OpenUsageTelemetry: Plugin = async () => {
   }
 }
 
-export default OpenUsageTelemetry
+
+// Native v2 events are global and contain prompts, responses and tool results.
+// Keep only completed per-message usage. Session usage.updated is cumulative
+// and must never be added to message totals. DB reconciliation fills gaps in
+// the explicitly volatile event stream (including starts missed at attach).
+async function setup(ctx: any): Promise<(() => Promise<void>) | undefined> {
+  const cfg = loadConfig()
+  if (!cfg.enabled || typeof ctx?.event?.subscribe !== "function") return
+  const controller = new AbortController()
+  const starts = new Map<string, AnyRecord>()
+  const delay = (ms: number) => new Promise<void>(resolve => {
+    if (controller.signal.aborted) { resolve(); return }
+    const done = () => { clearTimeout(timer); controller.signal.removeEventListener("abort", done); resolve() }
+    const timer = setTimeout(done, ms)
+    controller.signal.addEventListener("abort", done, { once: true })
+  })
+  const consume = (async () => {
+    let retryMS = 250
+    while (!controller.signal.aborted) {
+      try {
+        for await (const input of ctx.event.subscribe({ signal: controller.signal })) {
+          if (controller.signal.aborted) break
+          const event = asRecord(input)
+          const data = asRecord(event?.data)
+          const sessionID = pickString(data?.sessionID)
+          const messageID = pickString(data?.assistantMessageID)
+          if (!event || !data || !sessionID || !messageID) continue
+          const key = `${sessionID}:${messageID}`
+          if (event.type === "session.step.started") {
+            starts.set(key, {
+              model: normalizeModel(data.model), agent: pickString(data.agent),
+              started: pickInt(data.started, event.created),
+            })
+            if (starts.size > 2048) starts.delete(starts.keys().next().value!)
+            continue
+          }
+          if (event.type !== "session.step.ended" && event.type !== "session.step.failed") continue
+          const start = starts.get(key)
+          starts.delete(key)
+          const tokens = asRecord(data.tokens)
+          // A failed request may carry no usage. Do not turn it into a zero-
+          // usage "successful" request or synthesize counters from estimates.
+          if (!tokens) continue
+          const cache = asRecord(tokens.cache)
+          const clean: AnyRecord = {
+            sessionID, assistantMessageID: messageID,
+            model: start?.model || {}, agent: start?.agent || "opencode",
+            tokens: {
+              input: pickInt(tokens.input), output: pickInt(tokens.output),
+              reasoning: pickInt(tokens.reasoning),
+              cache: { read: pickInt(cache?.read), write: pickInt(cache?.write) },
+            },
+          }
+          if (typeof data.cost === "number" && Number.isFinite(data.cost)) clean.cost = data.cost
+          await sendPayload(cfg, { event: {
+            type: event.type, created: pickInt(event.created),
+            location: { directory: pickString(asRecord(event.location)?.directory, asRecord(ctx.location)?.directory) },
+            data: clean,
+          } })
+          retryMS = 250
+        }
+      } catch {
+        if (cfg.verbose && !controller.signal.aborted) console.error("[openusage-telemetry] event subscription interrupted; reconnecting")
+      }
+      if (!controller.signal.aborted) {
+        await delay(retryMS)
+        retryMS = Math.min(retryMS * 2, 5000)
+      }
+    }
+  })().catch(() => {
+    // Telemetry must not reject OpenCode's host lifecycle.
+  })
+  return async () => {
+    controller.abort()
+    await consume
+    starts.clear()
+  }
+}
+
+// OpenCode 1.2 calls every module export as a function; OpenCode 2 validates
+// an object with id/setup. The installer selects one default, never both.
+__OPENUSAGE_OPENCODE_EXPORT__
