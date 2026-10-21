@@ -118,3 +118,88 @@ func TestAntigravityInstallLifecycle(t *testing.T) {
 		t.Fatalf("uninstalled status = %+v, want missing", status)
 	}
 }
+
+func TestAntigravityUpgradePreservesProfileStateFile(t *testing.T) {
+	def, _ := DefinitionByID(AntigravityID)
+	root := t.TempDir()
+	for _, profile := range []string{"one", "two"} {
+		dirs := Dirs{Home: filepath.Join(root, profile), OpenusageBin: filepath.Join(root, "old", "openusage")}
+		stateFile := filepath.Join(root, "shared state", profile+"-$literal-`name`.json")
+		configFile := def.ConfigFileFunc(dirs)
+		cfg := map[string]any{
+			"theme": "keep",
+			"statusLine": map[string]any{
+				"command": antigravityStatuslineCommand(dirs.OpenusageBin) + " --state-file " + quoteAntigravityArgument(stateFile),
+				"padding": 3, "custom": "keep",
+			},
+		}
+		original, _ := json.Marshal(cfg)
+		if err := os.MkdirAll(filepath.Dir(configFile), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(configFile, original, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		dirs.OpenusageBin = filepath.Join(root, "new path", "openusage")
+		for range 2 {
+			if _, err := Upgrade(def, dirs); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(configFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(data, &cfg); err != nil {
+				t.Fatal(err)
+			}
+			status := cfg["statusLine"].(map[string]any)
+			binary, preserved, ok := parseAntigravityCommand(status["command"].(string))
+			if !ok || binary != dirs.OpenusageBin || preserved != stateFile {
+				t.Fatalf("profile %s state lost: binary=%q state=%q valid=%v", profile, binary, preserved, ok)
+			}
+			if cfg["theme"] != "keep" || status["custom"] != "keep" || status["padding"] != float64(3) {
+				t.Fatal("upgrade discarded unrelated config")
+			}
+		}
+	}
+}
+
+func TestAntigravityLiteralCommandPreservesArguments(t *testing.T) {
+	for _, path := range []string{"/tmp/profile one.json", `/tmp/$literal/` + "`name`" + `.json`, `/tmp/quote"and\slash.json`, "/tmp/single'quote.json"} {
+		for _, flag := range []string{" --state-file ", " --state-file="} {
+			command := `'old binary' antigravity statusline` + flag + quoteAntigravityArgument(path)
+			input, _ := json.Marshal(map[string]any{"statusLine": map[string]any{"command": command}})
+			patched, err := patchAntigravityConfig(input, "/tmp/new binary", true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var cfg map[string]any
+			if err := json.Unmarshal(patched, &cfg); err != nil {
+				t.Fatal(err)
+			}
+			command = cfg["statusLine"].(map[string]any)["command"].(string)
+			binary, state, ok := parseAntigravityCommand(command)
+			if !ok || binary != "/tmp/new binary" || state != path {
+				t.Fatalf("literal path changed: %q => binary=%q path=%q valid=%v", path, binary, state, ok)
+			}
+		}
+	}
+}
+
+func TestAntigravityUpgradeRefusesShellEvaluationAndUnknownOptions(t *testing.T) {
+	for _, suffix := range []string{
+		" | another-command", " ; another-command", " --unknown option",
+		` --state-file "$HOME/state.json"`, " --state-file `another-command`",
+		" --state-file /tmp/*.json", " --state-file", " --state-file=", "\nother-command",
+	} {
+		command := "openusage antigravity statusline" + suffix
+		input, _ := json.Marshal(map[string]any{"statusLine": map[string]any{"command": command}})
+		if _, err := patchAntigravityConfig(input, "/tmp/new", true); err == nil {
+			t.Fatalf("accepted non-literal command %q", command)
+		}
+		unchanged, err := patchAntigravityConfig(input, "/tmp/new", false)
+		if err != nil || string(unchanged) != string(input) {
+			t.Fatalf("changed custom command: %v", err)
+		}
+	}
+}

@@ -11,13 +11,14 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/janekbaraniewski/openusage/internal/providers/shared"
 )
 
 type statusLinePayload struct {
 	CWD            string                     `json:"cwd"`
 	SessionID      string                     `json:"session_id"`
 	ConversationID string                     `json:"conversation_id"`
-	TranscriptPath string                     `json:"transcript_path"`
 	Model          statusLineModel            `json:"model"`
 	Workspace      statusLineWorkspace        `json:"workspace"`
 	Version        string                     `json:"version"`
@@ -26,7 +27,6 @@ type statusLinePayload struct {
 	Quota          map[string]statusLineQuota `json:"quota"`
 	AgentState     string                     `json:"agent_state"`
 	PlanTier       string                     `json:"plan_tier"`
-	Email          string                     `json:"email"`
 	ReceivedAt     time.Time                  `json:"received_at"`
 
 	// expiredQuotaWindows counts windows dropped because their reset passed.
@@ -67,10 +67,6 @@ func (u statusLineCurrentUsage) CacheWriteTokensValue() int64 {
 	return u.AlternateCacheWrite
 }
 
-func (u statusLineCurrentUsage) TotalTokens() int64 {
-	return u.InputTokens + u.OutputTokens + u.CacheReadTokens + u.CacheWriteTokensValue()
-}
-
 type statusLineQuota struct {
 	RemainingFraction *float64 `json:"remaining_fraction"`
 	ResetTime         string   `json:"reset_time"`
@@ -103,12 +99,22 @@ func (q *statusLineQuota) UnmarshalJSON(data []byte) error {
 }
 
 func parseStatusLinePayload(data []byte) (statusLinePayload, error) {
+	return parseStatusLinePayloadAt(data, time.Now().UTC())
+}
+
+func parseStatusLinePayloadAt(data []byte, fallbackReceivedAt time.Time) (statusLinePayload, error) {
 	if len(bytes.TrimSpace(data)) == 0 {
 		return statusLinePayload{}, fmt.Errorf("empty status-line payload")
 	}
 	var payload statusLinePayload
 	if err := json.Unmarshal(data, &payload); err != nil {
 		return statusLinePayload{}, fmt.Errorf("parse status-line JSON: %w", err)
+	}
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		return statusLinePayload{}, fmt.Errorf("status-line payload must be an object")
+	}
+	if payload.ReceivedAt.IsZero() {
+		payload.ReceivedAt = fallbackReceivedAt.UTC()
 	}
 	if payload.Quota == nil {
 		payload.Quota = make(map[string]statusLineQuota)
@@ -140,9 +146,22 @@ func CaptureStatusLine(data []byte, path string) (string, error) {
 		return "AGY", fmt.Errorf("status-line state path is unavailable")
 	}
 
-	state, err := addReceivedAt(data, time.Now().UTC())
+	// Keep only fields used by this provider. Never retain arbitrary stdin
+	// fields (credentials/prompts), email or transcript paths. Workspace
+	// labels remain useful without copying absolute private paths to the Hub.
+	// Keep expired quota observations in the private state so Fetch can still
+	// distinguish "expired" from "not reported" after rendering filters them.
+	var stored statusLinePayload
+	if err := json.Unmarshal(data, &stored); err != nil {
+		return "AGY", fmt.Errorf("prepare status-line state: %w", err)
+	}
+	stored.ReceivedAt = time.Now().UTC()
+	stored.CWD = shared.SanitizeWorkspace(stored.CWD)
+	stored.Workspace.CurrentDir = shared.SanitizeWorkspace(stored.Workspace.CurrentDir)
+	stored.Workspace.ProjectDir = shared.SanitizeWorkspace(stored.Workspace.ProjectDir)
+	state, err := json.Marshal(stored)
 	if err != nil {
-		return "AGY", err
+		return "AGY", fmt.Errorf("encode status-line state: %w", err)
 	}
 	if err := writeStatusFile(path, state); err != nil {
 		return "AGY", err
@@ -159,23 +178,6 @@ func RenderStatusLine(data []byte) string {
 		return "AGY"
 	}
 	return renderStatusLine(payload)
-}
-
-func addReceivedAt(data []byte, receivedAt time.Time) ([]byte, error) {
-	var object map[string]json.RawMessage
-	if err := json.Unmarshal(data, &object); err != nil {
-		return nil, fmt.Errorf("prepare status-line state: %w", err)
-	}
-	timestamp, err := json.Marshal(receivedAt)
-	if err != nil {
-		return nil, fmt.Errorf("encode status-line timestamp: %w", err)
-	}
-	object["received_at"] = timestamp
-	state, err := json.Marshal(object)
-	if err != nil {
-		return nil, fmt.Errorf("encode status-line state: %w", err)
-	}
-	return state, nil
 }
 
 func writeStatusFile(path string, data []byte) error {

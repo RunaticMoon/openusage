@@ -13,7 +13,7 @@ func dashboardWidget() core.DashboardWidget {
 		providerbase.WithCompactRows(
 			core.DashboardCompactRow{Label: "Usage", Keys: []string{"quota", "context_window"}, MaxSegments: 2},
 			core.DashboardCompactRow{Label: "Session", Keys: []string{"total_tokens", "total_input_tokens", "total_output_tokens"}, MaxSegments: 3},
-			core.DashboardCompactRow{Label: "Current", Keys: []string{"current_tokens", "current_input_tokens", "current_output_tokens"}, MaxSegments: 3},
+			core.DashboardCompactRow{Label: "Current", Keys: []string{"current_input_tokens", "current_output_tokens", "current_cache_read_tokens"}, MaxSegments: 3},
 		),
 		providerbase.WithSectionOrder(
 			core.DashboardSectionHeader,
@@ -27,7 +27,6 @@ func dashboardWidget() core.DashboardWidget {
 			"total_tokens":               "Session Tokens",
 			"total_input_tokens":         "Session Input Tokens",
 			"total_output_tokens":        "Session Output Tokens",
-			"current_tokens":             "Current Tokens",
 			"current_input_tokens":       "Current Input Tokens",
 			"current_output_tokens":      "Current Output Tokens",
 			"current_cache_read_tokens":  "Current Cache Read",
@@ -39,7 +38,6 @@ func dashboardWidget() core.DashboardWidget {
 			"total_tokens":               "all",
 			"total_input_tokens":         "in",
 			"total_output_tokens":        "out",
-			"current_tokens":             "now",
 			"current_input_tokens":       "in",
 			"current_output_tokens":      "out",
 			"current_cache_read_tokens":  "cache read",
