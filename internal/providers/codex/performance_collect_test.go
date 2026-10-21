@@ -74,7 +74,7 @@ func TestCodexNativeTimingLateDBReplayCorrectionAndRestart(t *testing.T) {
 		t.Fatalf("late timing: count=%d err=%v", len(events), err)
 	}
 	r := performance.NormalizeRequest(*events[0].Performance)
-	if r.ResponseTokS == nil || *r.ResponseTokS != 75 || r.Outcome != core.OutcomeSuccess || r.TimingBasis != core.TimingInferredLogBoundary || r.Revision != end.UnixMilli() {
+	if r.ResponseTokS != nil || r.DurationMS == nil || *r.DurationMS != 40000 || r.Outcome != core.OutcomeUnknown || r.TimingBasis != core.TimingInferredLogBoundary || r.Revision != end.UnixMilli() {
 		t.Fatalf("late native response evidence: %+v", r)
 	}
 	for range 10 {
@@ -99,7 +99,7 @@ func TestCodexNativeTimingLateDBReplayCorrectionAndRestart(t *testing.T) {
 		t.Fatal("correction missing")
 	}
 	r = performance.NormalizeRequest(*events[0].Performance)
-	if r.ResponseTokS == nil || *r.ResponseTokS != 50 || *r.OutputTokens != 2000 {
+	if r.ResponseTokS != nil || r.DurationMS == nil || *r.DurationMS != 40000 || *r.OutputTokens != 2000 {
 		t.Fatalf("corrected speed %+v", r)
 	}
 	restarted, err := New().Collect(context.Background(), opts)
@@ -202,7 +202,7 @@ func TestCodexNativeTimingPendingAfterArchiveAndUnknownScopeRecovery(t *testing.
 	for _, e := range events {
 		r := performance.NormalizeRequest(*e.Performance)
 		if r.ID == "response" {
-			recovered = r.ResponseTokS != nil && *r.ResponseTokS == 75
+			recovered = r.ResponseTokS == nil && r.DurationMS != nil && *r.DurationMS == 40000 && r.TimingStatus == core.TimingValid
 		}
 		if r.ID == "other-response" && (r.ResponseTokS != nil || r.ExclusionReason != "missing_start") {
 			t.Fatalf("missing start diagnostic lost: %+v", r)
@@ -252,7 +252,7 @@ func TestCodexNativeTimingObservedZeroAndMissingOutputDiffer(t *testing.T) {
 				if r.ResponseTokS != nil || r.OutputTokens != nil || r.ExclusionReason != "missing_output" {
 					t.Fatal("missing output became observed zero")
 				}
-			} else if r.ResponseTokS == nil || *r.ResponseTokS != 0 || r.OutputTokens == nil || *r.OutputTokens != 0 {
+			} else if r.ResponseTokS != nil || r.ExclusionReason != "unknown_outcome" || r.OutputTokens == nil || *r.OutputTokens != 0 {
 				t.Fatal("observed zero lost or reasoning added")
 			}
 		})

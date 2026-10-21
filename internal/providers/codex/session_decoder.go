@@ -17,6 +17,7 @@ type sessionEvent struct {
 
 type eventPayload struct {
 	Type       string      `json:"type"`
+	TurnID     string      `json:"turn_id,omitempty"`
 	Info       *tokenInfo  `json:"info,omitempty"`
 	RateLimits *rateLimits `json:"rate_limits,omitempty"`
 	RequestID  string      `json:"request_id,omitempty"`
