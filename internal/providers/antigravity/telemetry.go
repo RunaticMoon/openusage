@@ -2,6 +2,8 @@ package antigravity
 
 import (
 	"context"
+	"errors"
+	"os"
 
 	"github.com/janekbaraniewski/openusage/internal/providers/shared"
 )
@@ -22,7 +24,15 @@ func (p *Provider) DefaultCollectOptions() shared.TelemetryCollectOptions {
 // status-line observations never create message_usage or raw_envelope events
 // and a missing or malformed status file cannot block transcript history.
 func (p *Provider) Collect(ctx context.Context, opts shared.TelemetryCollectOptions) ([]shared.TelemetryEvent, error) {
-	return collectTranscripts(ctx, opts)
+	events, err := collectTranscripts(ctx, opts)
+	// The daemon also probes optional sources without configured accounts.
+	// An absent default CLI is not a collection failure. Explicit accounts or
+	// custom roots retain errors, as does any malformed data that is present.
+	root := shared.ExpandHome(opts.Path("transcripts_dir", defaultTranscriptsDir()))
+	if opts.Path("account_id", "") == "" && root == defaultTranscriptsDir() && errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	return events, err
 }
 
 // ParseHookPayload validates explicit hook input without inferring a request
