@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -12,15 +14,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/janekbaraniewski/openusage/internal/config"
 	"github.com/janekbaraniewski/openusage/internal/core"
+	"github.com/janekbaraniewski/openusage/internal/exporter"
 	"github.com/janekbaraniewski/openusage/internal/providers/codex"
 	"github.com/janekbaraniewski/openusage/internal/providers/shared"
 	"github.com/janekbaraniewski/openusage/internal/telemetry"
 )
 
-// Native usage arrives first; the independently identified successful
-// completion arrives later without any JSONL change. All inputs are synthetic,
-// and the collector, SQLite stores, exporter and Hub run in isolation.
+// Native usage arrives first; an exact-ID endpoint tag arrives later without
+// any JSONL change. The tag also represents incomplete/interrupted responses:
+// it supplies interval metadata, never successful outcome evidence. All inputs
+// and the collector, SQLite stores, exporter and Hub are isolated.
 func TestCodexNativePerformanceLateCompletionToHub(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Second)
@@ -85,32 +90,58 @@ func TestCodexNativePerformanceLateCompletionToHub(t *testing.T) {
 	}
 	appendLog(end, `last_model_response_id="response"`)
 	late, err := collector.Collect(ctx)
-	if err != nil || len(late) != 1 || !late[0].PerformanceOnly {
+	if err != nil || len(late) != 1 || !late[0].PerformanceOnly || late[0].Performance == nil {
 		t.Fatal("unchanged JSONL did not receive metadata-only completion enrichment")
 	}
+	// Feed the previous adapter's incorrect success assertion. Current
+	// normalization must suppress it immediately; the later v2 observation
+	// then replaces its provenance without changing accounting or usage revision.
+	legacy := late[0]
+	legacyPerformance := legacy.Performance.DeepClone()
+	legacyPerformance.AdapterVersion = "codex_native_sqlite_v1"
+	legacyPerformance.Outcome = core.OutcomeSuccess
+	legacyPerformance.Evidence = []string{"native_response_id", "per_response_usage", "native_completed_response_id"}
+	legacy.Performance = &legacyPerformance
+	// A separate old-state store avoids trying to downgrade the authoritative
+	// v2 unknown record already checked above back to v1 through normal ingest.
+	store, path = performanceE2EStore(t, true)
+	performanceE2EIngest(t, store, plain)
+	performanceE2EIngest(t, store, []telemetry.IngestRequest{legacy})
+	legacySnapshot := view(path, true)
+	if legacySnapshot.Performance == nil || legacySnapshot.Performance.Summary.Coverage.Measured != 0 || legacySnapshot.Performance.Summary.Coverage.Unknown != 1 || legacySnapshot.Performance.Summary.Stats.WeightedResponseTokS != nil {
+		t.Fatal("current runtime trusted the retired adapter's unjustified success assertion")
+	}
+	endpoint, token := performanceE2EHub(t)
+	codexPerformancePushLatest(t, endpoint, token, account, legacySnapshot)
 	for range 3 {
 		performanceE2EIngest(t, store, late)
 	}
 	if err := store.RecordPerformanceScan(ctx, "codex", account, now); err != nil {
 		t.Fatal(err)
 	}
-	measured := view(path, true)
+	observed := view(path, true)
 	without := view(baselinePath, false)
-	summary := measured.Performance.Summary
-	if summary.Coverage.Candidates != 1 || summary.Coverage.Measured != 1 || summary.Coverage.Inferred != 1 || summary.Coverage.Direct != 0 || summary.Stats.OutputTokens != 3000 || summary.Stats.DurationMS != 40000 || summary.Stats.WeightedResponseTokS == nil || *summary.Stats.WeightedResponseTokS != 75 {
-		t.Fatalf("numeric native timing mismatch: %+v", summary)
+	summary := observed.Performance.Summary
+	if summary.Coverage.Candidates != 1 || summary.Coverage.Measured != 0 || summary.Coverage.Unknown != 1 || summary.Coverage.Excluded != 1 || summary.Coverage.Inferred != 0 || summary.Coverage.Direct != 0 || summary.Coverage.Reasons["unknown_outcome"] != 1 || summary.Stats.Count != 0 || summary.Stats.OutputTokens != 0 || summary.Stats.DurationMS != 0 || summary.Stats.WeightedResponseTokS != nil || summary.Stats.P50TokS != nil || summary.Stats.P90TokS != nil {
+		t.Fatalf("unknown-outcome native interval entered successful statistics: %+v", summary)
 	}
-	if !reflect.DeepEqual(without.Metrics, measured.Metrics) || !reflect.DeepEqual(performanceE2EAccounting(t, baseline), performanceE2EAccounting(t, store)) {
+	stored := codexPerformanceStoredRecords(t, store)
+	if len(stored) != 1 || stored[0].OutputTokens == nil || *stored[0].OutputTokens != 3000 || stored[0].DurationMS == nil || *stored[0].DurationMS != 40000 || stored[0].StartedAt == nil || !stored[0].StartedAt.Equal(start) || stored[0].EndedAt == nil || !stored[0].EndedAt.Equal(end) || stored[0].TimingBasis != core.TimingInferredLogBoundary || stored[0].Outcome != core.OutcomeUnknown || stored[0].ResponseTokS != nil || stored[0].AdapterVersion != "codex_native_sqlite_v2" {
+		t.Fatal("native interval/output metadata was lost or promoted to a successful response")
+	}
+	if !reflect.DeepEqual(without.Metrics, observed.Metrics) || !reflect.DeepEqual(performanceE2EAccounting(t, baseline), performanceE2EAccounting(t, store)) {
 		t.Fatal("completion enrichment changed canonical accounting or metrics")
 	}
 	warm, err := collector.Collect(ctx)
 	if err != nil || len(warm) != 0 {
 		t.Fatal("warm replay emitted duplicate source events")
 	}
-	endpoint, token := performanceE2EHub(t)
-	remote := performanceE2EPush(t, endpoint, token, map[string]core.UsageSnapshot{account: measured}, 1)["synthetic-performance:codex:"+account]
+	remote := codexPerformancePushLatest(t, endpoint, token, account, observed)
 	if remote.Performance == nil || !performanceE2EJSONEqual(summary, remote.Performance.Summary) || remote.Performance.Summary.Coverage.Direct != 0 {
-		t.Fatal("Hub lost inferred provenance or numeric timing")
+		t.Fatal("Hub did not revoke legacy success or retain the unknown-outcome exclusion")
+	}
+	if len(remote.Performance.Requests) != 1 || remote.Performance.Requests[0].Outcome != core.OutcomeUnknown || remote.Performance.Requests[0].ResponseTokS != nil || remote.Performance.Requests[0].OutputTokens == nil || *remote.Performance.Requests[0].OutputTokens != 3000 || remote.Performance.Requests[0].DurationMS == nil || *remote.Performance.Requests[0].DurationMS != 40000 {
+		t.Fatal("Hub lost interval metadata or retained a successful per-request speed")
 	}
 	encoded, err := json.Marshal(remote)
 	if err != nil || strings.Contains(string(encoded), "PRIVATE_CODEX_TIMING_SENTINEL") || strings.Contains(string(encoded), root) || strings.Contains(string(encoded), "last_model_response_id=") {
@@ -157,7 +188,7 @@ func TestPerformanceRealCodexReadOnlyToHub(t *testing.T) {
 	var warmElapsed, catchupElapsed time.Duration
 	warmEvents, sourceEvents, advances := 0, len(requests), 0
 	// The native reader intentionally bounds each pass. Always take one warm
-	// sample, then advance only while no measurable retained evidence exists.
+	// sample, then advance only while no retained interval metadata exists.
 	// Live accounting additions are ingested into both isolated stores.
 	for attempt := 0; attempt < 8; attempt++ {
 		started = time.Now()
@@ -173,11 +204,7 @@ func TestPerformanceRealCodexReadOnlyToHub(t *testing.T) {
 		catchupElapsed += elapsed
 		sourceEvents += len(warm)
 		ingestBatch(warm)
-		current, err := telemetry.QueryPerformance(ctx, path, telemetry.PerformanceQuery{Source: "codex", Account: account, Now: time.Now().UTC()})
-		if err != nil {
-			t.Fatal("isolated catch-up read model failed")
-		}
-		if current.Summary.Coverage.Measured > 0 {
+		if intervals, _, _ := codexPerformanceStoredIntervals(t, store); intervals > 0 {
 			break
 		}
 	}
@@ -198,8 +225,15 @@ func TestPerformanceRealCodexReadOnlyToHub(t *testing.T) {
 		t.Fatal("real-source performance changed canonical metrics")
 	}
 	p := snaps[account].Performance
-	if p == nil || p.Summary.Coverage.Inferred == 0 || p.Summary.Coverage.Direct != 0 || p.Summary.Stats.WeightedResponseTokS == nil {
-		t.Fatal("no conservative native Codex timing reached snapshot")
+	if p == nil || p.Summary.Coverage.Candidates == 0 || p.Summary.Coverage.Measured != 0 || p.Summary.Coverage.Inferred != 0 || p.Summary.Coverage.Direct != 0 || p.Summary.Stats.WeightedResponseTokS != nil || p.Summary.Stats.P50TokS != nil || p.Summary.Stats.P90TokS != nil || len(p.Summary.Coverage.Reasons) == 0 {
+		t.Fatal("native outcome without success evidence was measured or exclusions were lost")
+	}
+	intervals, intervalOutput, intervalDuration := codexPerformanceStoredIntervals(t, store)
+	// The configured active scope can legitimately have no retained native
+	// boundary pair. Positive-interval evidence is an explicit opt-in assertion,
+	// never a reason to widen the source scope to archived sessions.
+	if os.Getenv("OPENUSAGE_PERFORMANCE_REAL_CODEX_REQUIRE_INTERVAL") == "1" && intervals == 0 {
+		t.Fatal("explicitly required native interval metadata was not retained")
 	}
 	endpoint, token := performanceE2EHub(t)
 	remote := performanceE2EPush(t, endpoint, token, snaps, 1)["synthetic-performance:codex:"+account]
@@ -210,6 +244,95 @@ func TestPerformanceRealCodexReadOnlyToHub(t *testing.T) {
 	if err := store.DB().QueryRow(`SELECT COUNT(*) FROM performance_requests WHERE record_json LIKE '%"feedback_log_body":%' OR record_json LIKE '%"content":%' OR record_json LIKE '%"prompt":%' OR record_json LIKE '%"authorization":%'`).Scan(&leaks); err != nil || leaks != 0 {
 		t.Fatal("native metadata privacy check failed")
 	}
-	c, s := p.Summary.Coverage, p.Summary.Stats
-	t.Logf("numeric validation only: source_events=%d candidates=%d measured=%d direct=%d inferred=%d excluded=%d output_tokens=%d duration_ms=%.3f weighted_response_tok_s=%.6f warm_source_events=%d cold_ms=%.3f warm_ms=%.3f catchup_passes=%d catchup_collect_ms=%.3f accounting_equal=true metrics_equal=true replay_pass=true hub_snapshots=1", sourceEvents, c.Candidates, c.Measured, c.Direct, c.Inferred, c.Excluded, s.OutputTokens, s.DurationMS, *s.WeightedResponseTokS, warmEvents, float64(coldElapsed.Microseconds())/1000, float64(warmElapsed.Microseconds())/1000, advances, float64(catchupElapsed.Microseconds())/1000)
+	c := p.Summary.Coverage
+	t.Logf("numeric validation only: source_events=%d candidates=%d measured=%d direct=%d inferred=%d unknown=%d excluded=%d stored_intervals=%d interval_output_tokens=%d interval_duration_ms=%.3f weighted_response_tok_s=null warm_source_events=%d cold_ms=%.3f warm_ms=%.3f catchup_passes=%d catchup_collect_ms=%.3f accounting_equal=true metrics_equal=true replay_pass=true hub_snapshots=1", sourceEvents, c.Candidates, c.Measured, c.Direct, c.Inferred, c.Unknown, c.Excluded, intervals, intervalOutput, intervalDuration, warmEvents, float64(coldElapsed.Microseconds())/1000, float64(warmElapsed.Microseconds())/1000, advances, float64(catchupElapsed.Microseconds())/1000)
+}
+
+func codexPerformanceStoredRecords(t *testing.T, store *telemetry.Store) []core.PerformanceRequest {
+	t.Helper()
+	rows, err := store.DB().Query(`SELECT record_json FROM performance_requests`)
+	if err != nil {
+		t.Fatal("isolated native metadata query failed")
+	}
+	defer rows.Close()
+	var records []core.PerformanceRequest
+	for rows.Next() {
+		var encoded string
+		var record core.PerformanceRequest
+		if rows.Scan(&encoded) != nil || json.Unmarshal([]byte(encoded), &record) != nil {
+			t.Fatal("isolated native metadata decoding failed")
+		}
+		records = append(records, record)
+	}
+	if rows.Err() != nil {
+		t.Fatal("isolated native metadata iteration failed")
+	}
+	return records
+}
+
+func codexPerformanceStoredIntervals(t *testing.T, store *telemetry.Store) (count int, output int64, duration float64) {
+	t.Helper()
+	for _, r := range codexPerformanceStoredRecords(t, store) {
+		if r.ResponseTokS != nil || r.Outcome == core.OutcomeSuccess {
+			t.Fatal("native endpoint metadata manufactured successful response outcome")
+		}
+		if r.StartedAt != nil && r.EndedAt != nil && r.DurationMS != nil && *r.DurationMS > 0 && r.OutputTokens != nil && r.TimingStatus == core.TimingValid {
+			count++
+			output += *r.OutputTokens
+			duration += *r.DurationMS
+		}
+	}
+	return
+}
+
+// Unlike a count-only push probe, this waits for the same Hub key's updated
+// summary and request metadata. A cached zero-rate summary with stale adapter
+// provenance cannot satisfy the update assertion.
+func codexPerformancePushLatest(t *testing.T, endpoint, token, account string, snapshot core.UsageSnapshot) core.UsageSnapshot {
+	t.Helper()
+	expected := snapshot.DeepClone()
+	for i := range expected.Performance.Requests {
+		if expected.Performance.Requests[i].HostID == "" {
+			expected.Performance.Requests[i].HostID = "synthetic-performance"
+		}
+	}
+	e, err := exporter.New(config.ExportConfig{Target: endpoint, MachineName: "synthetic-performance", AuthToken: token, IntervalSeconds: 1})
+	if err != nil {
+		t.Fatal("isolated exporter initialization failed")
+	}
+	e.Ingest(map[string]core.UsageSnapshot{account: snapshot})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); e.Start(ctx) }()
+	defer func() { cancel(); <-done }()
+	deadline := time.Now().Add(5 * time.Second)
+	client := &http.Client{Timeout: 2 * time.Second}
+	for {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"/v1/snapshots", nil)
+		if err != nil {
+			t.Fatal("isolated Hub request creation failed")
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		response, err := client.Do(req)
+		if err != nil {
+			t.Fatal("isolated Hub request failed")
+		}
+		body, err := io.ReadAll(io.LimitReader(response.Body, 4*1024*1024))
+		_ = response.Body.Close()
+		if err != nil || response.StatusCode != http.StatusOK {
+			t.Fatal("isolated Hub response failed")
+		}
+		var received map[string]core.UsageSnapshot
+		if json.Unmarshal(body, &received) != nil {
+			t.Fatal("isolated Hub response decoding failed")
+		}
+		remote := received["synthetic-performance:codex:"+account]
+		if len(received) == 1 && remote.Performance != nil && performanceE2EJSONEqual(expected.Performance.Summary, remote.Performance.Summary) && performanceE2EJSONEqual(expected.Performance.Requests, remote.Performance.Requests) {
+			return remote
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Hub did not replace the previous performance summary")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
