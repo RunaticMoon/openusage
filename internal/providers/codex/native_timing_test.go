@@ -417,6 +417,26 @@ func TestNativeTimingMetadataCapacityAndUsageCapacity(t *testing.T) {
 	}
 	var r nativeTimingReader
 	s := nativeTestScan(t, &r, path)
+	pages := 1
+	for s.More {
+		if s.RowsRead > nativeTimingReadLimit || s.Reason != "backfill_pending" {
+			t.Fatalf("unbounded or prematurely complete page: %+v", s)
+		}
+		// Already observed completions may prove success while the remaining
+		// pages could still contain conflicting starts; never infer yet.
+		if m := r.MatchBatch([]nativeTimingUsage{nativeTestUsage("response-0", "thread", "turn")})["response-0"]; m.StartedAt.IsZero() == false || m.Reason != "backfill_pending" {
+			t.Fatalf("partial scan inferred a duration: %+v", m)
+		}
+		previous := s.Cursor
+		s = nativeTestScan(t, &r, path)
+		pages++
+		if s.Cursor <= previous || pages > (nativeTimingEventLimit+3)/nativeTimingReadLimit+1 {
+			t.Fatalf("bounded backfill made no progress: %+v, pages=%d", s, pages)
+		}
+	}
+	if s.RowsRead > nativeTimingReadLimit || pages < 2 {
+		t.Fatalf("capacity fixture did not exercise bounded paging: %+v, pages=%d", s, pages)
+	}
 	if s.EventsRetained != nativeTimingEventLimit {
 		t.Fatalf("unbounded retained metadata: %+v", s)
 	}

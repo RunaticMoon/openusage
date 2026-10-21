@@ -89,7 +89,7 @@ Open the source DB read-only, preserve committed WAL visibility and bound work
 and waiting. Do not run migrations, checkpoints, integrity repair or sidecar
 deletion on Codex's DB. Disabled performance does not open this timing source.
 Missing, busy, locked, unsupported or inaccessible timing evidence does not
-discard successfully parsed ordinary usage. The reader scans at most 32,768
+discard successfully parsed ordinary usage. The reader scans at most 8,192
 database rows per pass, retains 16,384 allowlisted metadata events, accepts log
 bodies up to 64 KiB and uses a two-second read deadline with a 100 ms SQLite
 busy timeout. It tracks the row cursor, file identity and an anchor record to

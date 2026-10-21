@@ -149,7 +149,7 @@ requests. This is compatible with successful ordinary Codex usage collection.
 Do not turn task, item, tool or HTTP handshake timers into a fallback rate.
 Historical measurements also do not imply a current wall-clock rate.
 
-The scan is bounded: at most 32,768 DB rows per pass, 16,384 retained native
+The scan is bounded: at most 8,192 DB rows per pass, 16,384 retained native
 metadata events and 8,192 pending usage identities per profile/account scope.
 Larger native DBs may need more existing Collector cycles to catch up, and
 older request identities may no longer be eligible for late enrichment. No

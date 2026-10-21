@@ -22,7 +22,9 @@ import (
 )
 
 const (
-	nativeTimingReadLimit  = 32768
+	// Commit a modest page before the query deadline, including under race/
+	// coverage instrumentation or a busy host. Subsequent polls resume by ID.
+	nativeTimingReadLimit  = 8192
 	nativeTimingEventLimit = 16384
 	nativeTimingBodyLimit  = 64 * 1024
 	nativeTimingUsageLimit = 8192
