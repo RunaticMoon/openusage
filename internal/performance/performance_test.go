@@ -28,6 +28,38 @@ func near(t *testing.T, got *float64, want float64) {
 		t.Fatalf("got %v, want %v", got, want)
 	}
 }
+
+func TestRetiredCodexNativeOutcomeIsCorrectedWithoutSourceReplay(t *testing.T) {
+	legacy := request("legacy-response", 3000, 40*time.Second)
+	legacy.SourceSystem, legacy.Namespace = "codex", "codex:response"
+	legacy.AdapterVersion = "codex_native_sqlite_v1"
+	legacy.TimingBasis = core.TimingInferredLogBoundary
+	legacy.ResponseTokS = ptr(75.) // serialized by the retired adapter
+	encoded, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored core.PerformanceRequest
+	if err := json.Unmarshal(encoded, &stored); err != nil {
+		t.Fatal(err)
+	}
+	got := NormalizeRequest(stored)
+	if got.Outcome != core.OutcomeUnknown || got.ResponseTokS != nil || got.ExclusionReason != "unknown_outcome" || got.DurationMS == nil || *got.DurationMS != 40000 || *got.OutputTokens != 3000 || got.ID != legacy.ID {
+		t.Fatal("retired native success survived read-time correction or metadata changed")
+	}
+	if !reflect.DeepEqual(got, NormalizeRequest(got)) {
+		t.Fatal("correction is not idempotent")
+	}
+	// The safeguard is tied to the retired source contract, not all providers
+	// or any arbitrary adapter that happens to have a v1 suffix.
+	other := legacy.DeepClone()
+	other.SourceSystem = "other"
+	near(t, NormalizeRequest(other).ResponseTokS, 75)
+	other = legacy.DeepClone()
+	other.AdapterVersion = "fixture_v1"
+	near(t, NormalizeRequest(other).ResponseTokS, 75)
+}
+
 func TestNormalizeResponseSpeed(t *testing.T) {
 	cases := []struct {
 		name   string
