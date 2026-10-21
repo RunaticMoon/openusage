@@ -123,7 +123,7 @@ func collectSQLiteV2Events(ctx context.Context, db *sql.DB, dbPath string) ([]sh
 			ev := buildSQLiteMessageTableEvent(dbPath, id, sessionID, created, updated, completed, createdAt, directory, payload, partSummary{}, u)
 			ev.SchemaVersion = "opencode_sqlite_v2"
 			ev.Payload["source"].(map[string]any)["table"] = "session_message"
-			if _, ok := payload["error"]; ok {
+			if payload["error"] != nil {
 				ev.Status = shared.TelemetryStatusError
 			}
 			out = append(out, ev)
@@ -209,7 +209,7 @@ func validateV2Number(object map[string]any, key string, integer bool) error {
 		return nil
 	}
 	n, ok := value.(float64)
-	if !ok || n < 0 || (integer && (n >= 1<<63 || n != float64(int64(n)))) {
+	if !ok || n < 0 || (integer && (n > 1<<53-1 || n != float64(int64(n)))) {
 		return fmt.Errorf("%w: invalid %s number", ErrSQLitePayload, key)
 	}
 	return nil

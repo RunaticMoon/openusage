@@ -95,7 +95,7 @@ func TestSQLiteV2UsageAndTools(t *testing.T) {
 func TestSQLiteV2UnknownVersusZero(t *testing.T) {
 	db, path := newV2Fixture(t)
 	putV2Message(t, db, "msg_none", "parent", "assistant", `{"time":{"completed":1780000005000}}`)
-	putV2Message(t, db, "msg_zero", "parent", "assistant", `{"tokens":{"input":0,"output":0},"cost":0}`)
+	putV2Message(t, db, "msg_zero", "parent", "assistant", `{"tokens":{"input":0,"output":0},"cost":0,"error":null}`)
 	events, err := CollectTelemetryFromSQLite(context.Background(), path)
 	if err != nil {
 		t.Fatal(err)
@@ -104,7 +104,7 @@ func TestSQLiteV2UnknownVersusZero(t *testing.T) {
 		t.Fatalf("events=%d", len(events))
 	}
 	e := events[0]
-	if e.MessageID != "msg_zero" || e.TotalTokens == nil || *e.TotalTokens != 0 || e.ReasoningTokens != nil {
+	if e.Status != shared.TelemetryStatusOK || e.MessageID != "msg_zero" || e.TotalTokens == nil || *e.TotalTokens != 0 || e.ReasoningTokens != nil {
 		t.Fatal("missing and zero usage conflated")
 	}
 }
@@ -149,6 +149,7 @@ func TestSQLiteSchemaAndPayloadErrors(t *testing.T) {
 	for _, tc := range []struct{ name, payload string }{
 		{"malformed", `{`}, {"null", `null`}, {"array", `[]`},
 		{"invalid tokens", `{"tokens":"unknown"}`}, {"negative", `{"tokens":{"input":-1}}`},
+		{"unsafe integer", `{"tokens":{"input":9007199254740992}}`},
 		{"overflow", `{"tokens":{"input":9000000000000000000,"output":9000000000000000000}}`},
 		{"fraction", `{"tokens":{"input":1.5}}`}, {"invalid cache", `{"tokens":{"cache":[]}}`},
 	} {
