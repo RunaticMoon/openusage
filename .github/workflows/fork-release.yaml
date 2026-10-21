@@ -23,6 +23,9 @@ jobs:
   gate:
     if: github.repository == 'RunaticMoon/openusage' && github.ref == 'refs/heads/custom'
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
     outputs:
       version: ${{ steps.validate.outputs.version }}
     steps:
@@ -89,5 +92,9 @@ jobs:
           Both native ARM64 targets passed tests, race detection, build and version execution.
           These artifacts are unsigned. This draft does not install or deploy anything.
           EOF
-          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$SHA" \
+          # Atomic create rejects a tag claimed after the initial gate; never reuse/overwrite it.
+          gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+            -f ref="refs/tags/$TAG" -f sha="$SHA"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq .object.sha)" = "$SHA"
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
             --draft --title "$TAG" --notes-file release-notes.txt release/*
