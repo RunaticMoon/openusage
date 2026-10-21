@@ -21,14 +21,14 @@ usage totals belong in the private operational handover.
 
 | Boundary | Evidence / required distinction |
 | --- | --- |
-| Installed OpenCode source | v2.1.1 was inspected read-only using a consistent private SQLite backup. Independent assistant-usage bucket aggregation and canonical storage replay passed; no raw DB/totals are published. This does not yet establish correct OpenCode tile projection for a different billing provider. |
+| Installed OpenCode source | v2.1.1 (Linux) and v2.0.32 (personal Mac) were inspected read-only using consistent private SQLite backups. Independent assistant-usage bucket aggregation and canonical storage replay passed; no raw DB/totals are published. Real records were validated locally; production OpenCode export remains disabled pending deployment approval. |
 | SQLite old/current schemas | Explicit schema detection, legacy and v2 fixtures, WAL visibility and unsupported-schema diagnostics are covered by the SQLite compatibility patch. Empty/no-usage state differs from unsupported structure. |
 | Provider/account mapping | Preserve tool, billing provider, model, session and stable original IDs; fixtures cover cache fields and reasoning. Missing fields are not silently converted into an invented complete total. |
-| OpenCode snapshot projection | An additional read-filter defect was found: canonical OpenCode events attributed to a billing provider such as Anthropic can be filtered out of the OpenCode tile. A separate source/account projection fix is being prepared. Do not mark real OpenCode tile/Hub usage complete until its final commit and runtime tests pass. |
+| OpenCode snapshot projection | The source/account projection fix (`7e5a819`, [PR #8](https://github.com/RunaticMoon/openusage/pull/8)) retains billing-vendor identity while selecting only the exact OpenCode source/account. Five vendor/model cases in both Hook/DB orders passed through the authenticated loopback Hub with partial/final/downward corrections. Production OpenCode snapshots are still not enabled. |
 | Repeated/partial usage | Stable message IDs and mutable-row revisions address later final values and Hook/DB replay. Check the update patch and canonical replay evidence; do not add request values to session cumulatives. |
 | Database open errors | Store-open failures preserve original data instead of treating every error as corruption. Lock, read-only, directory/permission, invalid header and migration/schema errors need distinct handling. |
 | OpenCode plugin | The rendered plugin factory/lifecycle and usage delivery have dedicated contract tests. A plugin source patch does not prove the existing operational hook was replaced or that every host credential path works. |
-| Provider diagnostics | Optional diagnostics must preserve JSON consumers and distinguish attempt/success, latest usage and no new event. Final integration tests determine the exact new fields; do not infer data freshness from process liveness. |
+| Provider diagnostics | Optional diagnostics must preserve JSON consumers and distinguish attempt/success, latest usage and no new event. The optional local health map is described in [collector-health.md](collector-health.md); JSON compatibility and state-transition tests passed. Do not infer data freshness from process liveness. |
 | Deployment | No patched production service/hook replacement is claimed by the source tests. Canary deployment remains separately approved. |
 
 For usage interpretation, count cache read/write once according to the source's
@@ -76,9 +76,10 @@ openusage hub-view 'http://<tailnet-hub>:<verified-port>' --interval 10s
 curl --config '/<private>/hub-read.curl' 'http://<tailnet-hub>:<verified-port>/v1/snapshots'
 ```
 
-Test original Hub/new Collector and new Hub/original Collector with synthetic
-envelopes on loopback before canary. Keep compatibility test run/SHA references
-in the integration PR; a code review alone is not a cross-version runtime test.
+Original v0.26.1 Hub/new Collector and new Hub/original Collector were exercised
+with isolated synthetic vendor usage, duplicate delivery, revisions and authentication.
+Rerun [the binary compatibility script](../../scripts/test-fork-compatibility.py)
+on the final artifact and keep its SHA/report with the integration PR before canary.
 
 ## Build versus execution evidence
 
