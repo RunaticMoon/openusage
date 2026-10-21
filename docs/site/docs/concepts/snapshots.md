@@ -30,6 +30,29 @@ Currencies vary: most providers report USD, Mistral reports EUR, DeepSeek defaul
 - per-model token counts
 - tool-call counts (for agents that report them)
 
+### Daily token history
+
+The telemetry read model includes UTC daily token series in `daily_series`:
+
+| Key | Value |
+|---|---|
+| `analytics_tokens` | Canonical total tokens from deduplicated usage events |
+| `analytics_work_tokens` | Total tokens minus cache reads and cache writes |
+| `analytics_cached_tokens` | Cache reads plus cache writes |
+| `analytics_token_split_partial` | `1` when a day's Work/Cached totals cover only the events with a known token breakdown |
+
+Work and Cached use the same account, event deduplication, and date boundaries as
+the total series. A recorded zero remains zero. An event without a cache
+breakdown does not become a zero-cache observation, and a day without any known
+breakdowns has no Work/Cached point. Partial days contain the measured subtotal;
+consumers should mark it as incomplete.
+
+These series also travel with exported snapshots. Each sending daemon must be
+updated for a multi-machine dashboard to receive its daily breakdown. Restarting
+the updated daemon rebuilds the series from retained usage events, including
+existing history; no database migration is required. Older snapshots without
+these keys remain valid, but cannot supply daily Work/Cached curves.
+
 ### Rate limits
 
 Providers may expose any combination of:

@@ -90,10 +90,14 @@ type telemetryProviderAgg struct {
 }
 
 type telemetryDayPoint struct {
-	Day      string
-	CostUSD  float64
-	Requests float64
-	Tokens   float64
+	Day               string
+	CostUSD           float64
+	Requests          float64
+	Tokens            float64
+	WorkTokens        float64
+	CachedTokens      float64
+	TokenSplitSamples int
+	TokenSplitMissing int
 }
 
 type telemetryActivityAgg struct {
