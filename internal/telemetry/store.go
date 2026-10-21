@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -25,8 +26,9 @@ import (
 var telemetryLog = core.NewLogger("telemetry")
 
 type Store struct {
-	db  *sql.DB
-	now func() time.Time
+	db                 *sql.DB
+	now                func() time.Time
+	performanceEnabled atomic.Bool
 }
 
 // openAndConfigureDB opens a SQLite database at the given path and applies
@@ -358,6 +360,9 @@ func (s *Store) RunMigrations(ctx context.Context) error {
 
 func (s *Store) Ingest(ctx context.Context, req IngestRequest) (IngestResult, error) {
 	norm := normalizeRequest(req, s.now().UTC())
+	if norm.PerformanceOnly {
+		return s.ingestPerformanceOnly(ctx, norm)
+	}
 	payloadBytes, err := marshalPayload(norm.Payload)
 	if err != nil {
 		return IngestResult{}, fmt.Errorf("telemetry: marshal payload: %w", err)
@@ -381,6 +386,10 @@ func (s *Store) Ingest(ctx context.Context, req IngestRequest) (IngestResult, er
 	}
 	defer tx.Rollback()
 
+	performanceUpdated, err := s.upsertPerformance(ctx, tx, norm, now)
+	if err != nil {
+		return IngestResult{}, err
+	}
 	existing, found, err := findEventByDedupKey(ctx, tx, dedupKey)
 	if err != nil {
 		return IngestResult{}, fmt.Errorf("telemetry: lookup dedup key: %w", err)
@@ -396,7 +405,7 @@ func (s *Store) Ingest(ctx context.Context, req IngestRequest) (IngestResult, er
 		return IngestResult{
 			Status:     "accepted",
 			Deduped:    true,
-			Updated:    updated,
+			Updated:    updated || performanceUpdated,
 			EventID:    existing.EventID,
 			RawEventID: existing.RawEventID,
 		}, nil
@@ -477,7 +486,7 @@ func (s *Store) Ingest(ctx context.Context, req IngestRequest) (IngestResult, er
 			return IngestResult{
 				Status:     "accepted",
 				Deduped:    true,
-				Updated:    updated,
+				Updated:    updated || performanceUpdated,
 				EventID:    existing.EventID,
 				RawEventID: existing.RawEventID,
 			}, nil

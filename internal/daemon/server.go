@@ -142,6 +142,12 @@ func startService(ctx context.Context, cfg Config) (*Service, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open daemon telemetry store: %w", err)
 	}
+	if cfg.Performance.Enabled {
+		if err := store.EnablePerformance(ctx); err != nil {
+			_ = store.Close()
+			return nil, fmt.Errorf("enable performance store: %w", err)
+		}
+	}
 	if err := store.RunMigrations(ctx); err != nil {
 		log.Printf("[daemon] warning: migrations failed: %v", err)
 	}

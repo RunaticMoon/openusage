@@ -53,6 +53,11 @@ type storedLimitEnvelope struct {
 }
 
 type ReadModelOptions struct {
+	PerformanceEnabled          bool
+	PerformanceBufferMinutes    int
+	PerformanceExportIntervalMS int64
+	Now                         time.Time
+
 	ProviderLinks map[string]string
 	Since         time.Time
 	TodaySince    time.Time
@@ -138,6 +143,12 @@ func ApplyCanonicalTelemetryViewWithOptions(
 	done = trace("applyWindowedCreditSpend")
 	result = applyWindowedCreditSpend(ctx, db, result, options)
 	done()
+	if options.PerformanceEnabled {
+		result, err = applyPerformanceView(ctx, db, dbPath, result, options)
+		if err != nil {
+			return result, err
+		}
+	}
 	return result, nil
 }
 

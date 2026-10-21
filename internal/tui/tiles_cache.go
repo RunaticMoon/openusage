@@ -18,6 +18,7 @@ func (m *Model) cachedTileBodyLines(
 ) []string {
 	hideCosts := m.resolveHideCosts(snap)
 	key := tileBodyCacheKey(snap, widget, m.timeWindow, innerW, modelMixExpanded, m.hideSectionsWithNoData, hideCosts)
+	key += "|" + performanceRenderKey(snap.Performance, m.viewNow())
 	if lines, ok := m.tileBodyCache[key]; ok {
 		return lines
 	}
@@ -243,6 +244,7 @@ func (m *Model) buildTileBodyLines(
 	compactMetricKeys = addUsedKeys(compactMetricKeys, providerBurnKeys)
 
 	var otherLines []string
+	otherLines = appendOtherGroup(otherLines, buildTilePerformanceLines(snap.Performance, m.viewNow(), innerW))
 	otherLines = appendOtherGroup(otherLines, compactMetricLines)
 
 	geminiQuotaLines, geminiQuotaKeys := buildGeminiOtherQuotaLines(snap, innerW)

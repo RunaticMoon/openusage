@@ -8,16 +8,19 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+
+	"github.com/janekbaraniewski/openusage/internal/core"
 )
 
 // WriteJSON encodes the report as indented JSON via a stable view that omits
 // zero-value timestamps and internal fields.
 func (rep Report) WriteJSON(w io.Writer) error {
 	view := reportView{
-		Kind:   string(rep.Kind),
-		Rows:   make([]rowView, 0, len(rep.Rows)),
-		Totals: toRowView(rep.Totals),
-		Note:   rep.Note,
+		Kind:        string(rep.Kind),
+		Rows:        make([]rowView, 0, len(rep.Rows)),
+		Totals:      toRowView(rep.Totals),
+		Note:        rep.Note,
+		Performance: rep.Performance,
 	}
 	for _, r := range rep.Rows {
 		view.Rows = append(view.Rows, toRowView(r))
@@ -28,6 +31,8 @@ func (rep Report) WriteJSON(w io.Writer) error {
 }
 
 type reportView struct {
+	Performance *core.PerformanceSnapshot `json:"performance,omitempty"`
+
 	Kind   string    `json:"kind"`
 	Rows   []rowView `json:"rows"`
 	Totals rowView   `json:"totals"`
@@ -106,6 +111,9 @@ func (rep Report) WriteTable(w io.Writer) error {
 	}
 	if rep.Note != "" {
 		fmt.Fprintf(w, "\nnote: %s\n", rep.Note)
+	}
+	if rep.Performance != nil {
+		return WritePerformanceTable(w, rep.Performance)
 	}
 	return nil
 }

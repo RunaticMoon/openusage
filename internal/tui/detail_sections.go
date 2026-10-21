@@ -28,6 +28,11 @@ func buildDetailSections(snap core.UsageSnapshot, widget core.DashboardWidget, w
 		candidates[core.DetailSectionUsage] = append(candidates[core.DetailSectionUsage],
 			detailSection{id: "Usage", title: "Usage", icon: "⚡", color: colorYellow, lines: usageLines})
 	}
+	// Performance is a separate card, never a quota/remaining-capacity gauge.
+	if performanceLines := buildDetailPerformanceLines(snap.Performance, now, innerW); len(performanceLines) > 0 {
+		candidates[core.DetailSectionUsage] = append(candidates[core.DetailSectionUsage],
+			detailSection{id: "Performance", title: "Performance", icon: "↗", color: colorSky, lines: performanceLines})
+	}
 
 	// 2. Cost & Credits — spending summary with projections. Suppressed when
 	// hide-costs is on so subscription users don't see misleading

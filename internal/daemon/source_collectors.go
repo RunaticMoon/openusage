@@ -54,7 +54,11 @@ func ResolveTelemetrySourceOptions(
 		return opts, accountID, []string{"telemetry config unavailable; using default source options"}
 	}
 
-	return resolveTelemetrySourceOptionsFromAccounts(source, accounts, accountID)
+	opts, resolved, warnings := resolveTelemetrySourceOptionsFromAccounts(source, accounts, accountID)
+	if cfg, err := config.Load(); err == nil {
+		opts.PerformanceEnabled = cfg.Telemetry.Performance.Enabled
+	}
+	return opts, resolved, warnings
 }
 
 func loadTelemetrySourceAccounts() ([]core.AccountConfig, error) {
@@ -224,7 +228,7 @@ func collectOptionsForAccount(source shared.TelemetrySource, acct core.AccountCo
 }
 
 func cloneCollectOptions(in shared.TelemetryCollectOptions) shared.TelemetryCollectOptions {
-	out := shared.TelemetryCollectOptions{}
+	out := shared.TelemetryCollectOptions{PerformanceEnabled: in.PerformanceEnabled}
 	if len(in.Paths) > 0 {
 		out.Paths = make(map[string]string, len(in.Paths))
 		for key, value := range in.Paths {

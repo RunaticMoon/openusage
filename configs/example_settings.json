@@ -9,6 +9,12 @@
     "time_window": "7d",
     "retention_days": 30
   },
+  "telemetry": {
+    "performance": {
+      "enabled": false,
+      "buffer_minutes": 30
+    }
+  },
   "model_normalization": {
     "enabled": true,
     "group_by": "lineage",

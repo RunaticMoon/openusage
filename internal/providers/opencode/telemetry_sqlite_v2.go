@@ -82,7 +82,7 @@ func identifySQLiteSchema(ctx context.Context, db *sql.DB) (string, error) {
 	return schema, nil
 }
 
-func collectSQLiteV2Events(ctx context.Context, db *sql.DB, dbPath string) ([]shared.TelemetryEvent, error) {
+func collectSQLiteV2Events(ctx context.Context, db *sql.DB, dbPath string, performanceEnabled ...bool) ([]shared.TelemetryEvent, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT m.id, m.session_id, m.time_created, m.time_updated, m.data, COALESCE(s.directory, '')
 		FROM session_message m
@@ -119,12 +119,17 @@ func collectSQLiteV2Events(ctx context.Context, db *sql.DB, dbPath string) ([]sh
 		u := extractUsage(payload)
 		completed := ptrInt64FromFloat(shared.FirstPathNumber(payload, []string{"time", "completed"}))
 		createdAt := ptrInt64FromFloat(shared.FirstPathNumber(payload, []string{"time", "created"}))
-		if knownV2Usage(u) {
+		knownUsage := knownV2Usage(u)
+		if knownUsage || (len(performanceEnabled) > 0 && performanceEnabled[0]) {
 			ev := buildSQLiteMessageTableEvent(dbPath, id, sessionID, created, updated, completed, createdAt, directory, payload, partSummary{}, u)
+			ev.PerformanceOnly = !knownUsage
 			ev.SchemaVersion = "opencode_sqlite_v2"
 			ev.Payload["source"].(map[string]any)["table"] = "session_message"
 			if payload["error"] != nil {
 				ev.Status = shared.TelemetryStatusError
+			}
+			if len(performanceEnabled) > 0 && performanceEnabled[0] {
+				ev.Performance = sqliteV2Performance(ev, payload, dbPath, updated)
 			}
 			out = append(out, ev)
 		}

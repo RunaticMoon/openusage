@@ -67,10 +67,13 @@ type IngestRequest struct {
 	ModelCanonical string    `json:"model_canonical,omitempty"`
 	ModelLineageID string    `json:"model_lineage_id,omitempty"`
 	core.TokenUsage
-	ToolName             string      `json:"tool_name,omitempty"`
-	Status               EventStatus `json:"status,omitempty"`
-	NormalizationVersion string      `json:"normalization_version,omitempty"`
-	Payload              any         `json:"payload,omitempty"`
+	ToolName              string                   `json:"tool_name,omitempty"`
+	Status                EventStatus              `json:"status,omitempty"`
+	NormalizationVersion  string                   `json:"normalization_version,omitempty"`
+	PerformanceOnly       bool                     `json:"performance_only,omitempty"`
+	PerformanceSourcePath string                   `json:"performance_source_path,omitempty"`
+	Performance           *core.PerformanceRequest `json:"performance,omitempty"`
+	Payload               any                      `json:"payload,omitempty"`
 }
 
 type CanonicalEvent struct {

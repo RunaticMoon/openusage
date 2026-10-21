@@ -64,9 +64,11 @@ type jsonlCacheEntry struct {
 // telemetryCacheEntry tracks the last parsed position for a single JSONL file.
 // When a file grows append-only, only new lines are parsed and emitted.
 type telemetryCacheEntry struct {
-	modTime  time.Time
-	size     int64
-	byteSize int64 // file size at last parse (for incremental seek)
+	sourceInfo       os.FileInfo
+	modTime          time.Time
+	size             int64
+	byteSize         int64 // file size at last parse (for incremental seek)
+	performanceState *claudePerformanceState
 }
 
 func New() *Provider {

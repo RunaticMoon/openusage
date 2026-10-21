@@ -16,7 +16,7 @@ import (
 )
 
 // CollectTelemetryFromSQLite parses OpenCode SQLite data (message + part tables).
-func CollectTelemetryFromSQLite(ctx context.Context, dbPath string) ([]shared.TelemetryEvent, error) {
+func CollectTelemetryFromSQLite(ctx context.Context, dbPath string, performanceEnabled ...bool) ([]shared.TelemetryEvent, error) {
 	if strings.TrimSpace(dbPath) == "" {
 		return nil, nil
 	}
@@ -48,7 +48,7 @@ func CollectTelemetryFromSQLite(ctx context.Context, dbPath string) ([]shared.Te
 		return nil, err
 	}
 	if schema == "v2" {
-		return collectSQLiteV2Events(ctx, db, dbPath)
+		return collectSQLiteV2Events(ctx, db, dbPath, len(performanceEnabled) > 0 && performanceEnabled[0])
 	}
 
 	hasMessageTable, err := sqliteTableExists(ctx, db, "message")

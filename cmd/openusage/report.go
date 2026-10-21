@@ -129,6 +129,7 @@ func runReport(kind report.Kind, f *reportFlags) error {
 	}
 
 	rep := report.Build(events, opts)
+	attachReportPerformance(&rep, opts)
 	if note != "" {
 		if rep.Note != "" {
 			rep.Note = note + "; " + rep.Note

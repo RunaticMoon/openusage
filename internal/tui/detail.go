@@ -46,7 +46,7 @@ func RenderDetailContent(snap core.UsageSnapshot, now time.Time, w int, warnThre
 	// ── Compact top bar ──
 	renderDetailCompactHeader(&sb, snap, now, w, hideCosts)
 
-	if len(snap.Metrics) == 0 && len(snap.ModelUsage) == 0 {
+	if len(snap.Metrics) == 0 && len(snap.ModelUsage) == 0 && snap.Performance == nil {
 		if snap.Message != "" {
 			sb.WriteString("\n")
 			sb.WriteString(dimStyle.Render("  " + snap.Message))

@@ -18,6 +18,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/janekbaraniewski/openusage/internal/core"
 )
 
 // Kind identifies a report shape.
@@ -99,6 +101,8 @@ func (r *Row) add(e Event) {
 
 // Report is the aggregated result.
 type Report struct {
+	Performance *core.PerformanceSnapshot `json:"performance,omitempty"`
+
 	Kind   Kind   `json:"kind"`
 	Rows   []Row  `json:"rows"`
 	Totals Row    `json:"totals"`

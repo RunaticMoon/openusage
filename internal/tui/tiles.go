@@ -619,7 +619,7 @@ func (m Model) tileShouldRenderLoading(snap core.UsageSnapshot) bool {
 	default:
 		return false
 	}
-	if len(snap.Metrics) > 0 || len(snap.ModelUsage) > 0 || len(snap.DailySeries) > 0 || len(snap.Resets) > 0 {
+	if len(snap.Metrics) > 0 || len(snap.ModelUsage) > 0 || len(snap.DailySeries) > 0 || len(snap.Resets) > 0 || snap.Performance != nil {
 		return false
 	}
 	return true

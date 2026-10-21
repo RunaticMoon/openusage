@@ -141,7 +141,7 @@ func (p *Provider) Collect(ctx context.Context, opts shared.TelemetryCollectOpti
 	var out []shared.TelemetryEvent
 
 	if strings.TrimSpace(dbPath) != "" {
-		cacheKey := dbPath + "|" + accountID
+		cacheKey := fmt.Sprintf("%s|%s|performance:%t", dbPath, accountID, opts.PerformanceEnabled)
 		fingerprint, fingerprintErr := opencodeSQLiteFingerprint(dbPath)
 		if fingerprintErr != nil {
 			return out, fmt.Errorf("fingerprint opencode sqlite telemetry: %w", fingerprintErr)
@@ -157,7 +157,7 @@ func (p *Provider) Collect(ctx context.Context, opts shared.TelemetryCollectOpti
 		}
 		p.telemetryCacheMu.Unlock()
 		if fingerprint == "" || fingerprint != cachedFingerprint {
-			events, err := CollectTelemetryFromSQLite(ctx, dbPath)
+			events, err := CollectTelemetryFromSQLite(ctx, dbPath, opts.PerformanceEnabled)
 			optionalDefault := accountID == "" && (opts.Path("db_path", "") == "" || dbPath == defaults.Paths["db_path"])
 			if errors.Is(err, os.ErrNotExist) && optionalDefault {
 				// An uninstalled optional source is different from an explicitly

@@ -88,6 +88,11 @@ func (s *Service) collectAndFlush(ctx context.Context) int {
 	const backlogFlushLimit = 2000
 
 	var allReqs []telemetry.IngestRequest
+	type performanceScan struct {
+		source, account string
+		at              time.Time
+	}
+	var performanceScans []performanceScan
 	totalCollected := 0
 	var warnings []string
 	accounts, accountsErr := loadTelemetrySourceAccounts()
@@ -98,10 +103,18 @@ func (s *Service) collectAndFlush(ctx context.Context) int {
 	warnings = append(warnings, collectorWarnings...)
 
 	for _, collector := range collectors {
+		if source, ok := collector.(*telemetry.SourceCollector); ok {
+			source.Options.PerformanceEnabled = s.cfg.Performance.Enabled
+		}
 		reqs, err := s.collectWithHealth(ctx, collector)
 		if err != nil {
 			warnings = append(warnings, fmt.Sprintf("%s: %v", collector.Name(), err))
 			continue
+		}
+		if s.cfg.Performance.Enabled {
+			if source, ok := collector.(*telemetry.SourceCollector); ok {
+				performanceScans = append(performanceScans, performanceScan{source.Name(), source.AccountOverride, s.now()})
+			}
 		}
 		totalCollected += len(reqs)
 		allReqs = append(allReqs, reqs...)
@@ -120,6 +133,17 @@ func (s *Service) collectAndFlush(ctx context.Context) int {
 		s.markDataIngested()
 	}
 	warnings = append(warnings, flushWarnings...)
+	// A scan is fresh only after its events reached durable storage. A failed
+	// batch/spool cannot advertise complete live coverage from a newer heartbeat.
+	if direct.failed == 0 && flush.Failed == 0 && len(flushWarnings) == 0 {
+		for _, scan := range performanceScans {
+			if err := s.store.RecordPerformanceScan(ctx, scan.source, scan.account, scan.at); err != nil {
+				warnings = append(warnings, "performance scan checkpoint failed")
+			} else {
+				s.markDataIngested() // existing loop refreshes freshness and window expiry
+			}
+		}
+	}
 
 	durationMs := time.Since(started).Milliseconds()
 	if totalCollected > 0 || direct.processed > 0 || enqueued > 0 || flush.Processed > 0 || len(warnings) > 0 {
@@ -238,6 +262,11 @@ func (s *Service) pruneOldData(ctx context.Context) (complete bool) {
 
 	pruneCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+	if s.cfg.Performance.Enabled {
+		if _, err := s.store.PrunePerformance(pruneCtx, s.now().AddDate(0, 0, -retentionDays)); err != nil {
+			s.warnf("performance_prune_error", "metadata pruning failed")
+		}
+	}
 	// Drain the change log in a tight loop. A coalesced log is bounded by
 	// O(distinct events) — typically 3-4x the events table — so the size
 	// ceiling is conservative. The old single-shot 50k prune could not keep

@@ -61,11 +61,15 @@ func (p *Provider) Collect(ctx context.Context, opts shared.TelemetryCollectOpti
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		if entry, ok := p.telemetryCache[path]; ok {
+		cacheKey := path
+		if opts.PerformanceEnabled {
+			cacheKey += "|performance:true"
+		}
+		if entry, ok := p.telemetryCache[cacheKey]; ok && (!opts.PerformanceEnabled || entry.sourceInfo == nil || os.SameFile(entry.sourceInfo, info)) {
 			// Codex session logs are append-only. Some filesystem activity can
 			// update mtime without adding bytes, which must not trigger a full
 			// historical reparse.
-			if entry.size == info.Size() {
+			if entry.size == info.Size() && (!opts.PerformanceEnabled || entry.modTime.Equal(info.ModTime())) {
 				entry.modTime = info.ModTime()
 				continue
 			}
@@ -73,7 +77,7 @@ func (p *Provider) Collect(ctx context.Context, opts shared.TelemetryCollectOpti
 			// before the parser reaches EOF. In that race byteOffset can be ahead
 			// of the cached size. When a later stat catches up exactly, there are
 			// no unread bytes; falling through would replay the whole session.
-			if info.Size() == entry.byteOffset {
+			if info.Size() == entry.byteOffset && (!opts.PerformanceEnabled || entry.modTime.Equal(info.ModTime())) {
 				entry.modTime = info.ModTime()
 				entry.size = info.Size()
 				continue
@@ -94,6 +98,7 @@ func (p *Provider) Collect(ctx context.Context, opts shared.TelemetryCollectOpti
 				} else {
 					nextState = nextState.clone()
 				}
+				nextState.performanceEnabled = opts.PerformanceEnabled
 				events, nextOffset, nextLineNumber, err := parseTelemetrySessionFileFrom(path, resumeOffset, resumeLineNumber, nextState)
 				if err == nil && nextOffset >= entry.byteOffset {
 					if accountID != "" {
@@ -101,7 +106,8 @@ func (p *Provider) Collect(ctx context.Context, opts shared.TelemetryCollectOpti
 							events[i].AccountID = accountID
 						}
 					}
-					pendingCache[path] = &telemetryCacheEntry{
+					pendingCache[cacheKey] = &telemetryCacheEntry{
+						sourceInfo: info,
 						modTime:    info.ModTime(),
 						size:       max(info.Size(), nextOffset),
 						byteOffset: nextOffset,
@@ -117,7 +123,8 @@ func (p *Provider) Collect(ctx context.Context, opts shared.TelemetryCollectOpti
 			if err != nil {
 				continue
 			}
-			p.telemetryCache[path] = &telemetryCacheEntry{
+			p.telemetryCache[cacheKey] = &telemetryCacheEntry{
+				sourceInfo: info,
 				modTime:    info.ModTime(),
 				size:       info.Size(),
 				byteOffset: resumeOffset,
@@ -126,6 +133,7 @@ func (p *Provider) Collect(ctx context.Context, opts shared.TelemetryCollectOpti
 		}
 
 		state := newTelemetryParserState(path)
+		state.performanceEnabled = opts.PerformanceEnabled
 		events, nextOffset, nextLineNumber, err := parseTelemetrySessionFileFrom(path, 0, 0, state)
 		if err != nil {
 			continue
@@ -135,7 +143,8 @@ func (p *Provider) Collect(ctx context.Context, opts shared.TelemetryCollectOpti
 				events[i].AccountID = accountID
 			}
 		}
-		pendingCache[path] = &telemetryCacheEntry{
+		pendingCache[cacheKey] = &telemetryCacheEntry{
+			sourceInfo: info,
 			modTime:    info.ModTime(),
 			size:       max(info.Size(), nextOffset),
 			byteOffset: nextOffset,
@@ -350,13 +359,15 @@ func DefaultTelemetrySessionsDir() string {
 }
 
 // ParseTelemetrySessionFile parses a Codex session JSONL file into normalized telemetry events.
-func ParseTelemetrySessionFile(path string) ([]shared.TelemetryEvent, error) {
+func ParseTelemetrySessionFile(path string, performanceEnabled ...bool) ([]shared.TelemetryEvent, error) {
 	state := newTelemetryParserState(path)
+	state.performanceEnabled = len(performanceEnabled) > 0 && performanceEnabled[0]
 	events, _, _, err := parseTelemetrySessionFileFrom(path, 0, 0, state)
 	return events, err
 }
 
 type telemetryParserState struct {
+	performanceEnabled bool
 	sessionID          string
 	model              string
 	upstreamProviderID string
@@ -451,6 +462,12 @@ func parseTelemetrySessionFileFrom(path string, byteOffset int64, lineNumber int
 	}
 	nextOffset, nextLineNumber, err := walkSessionFileFrom(path, byteOffset, lineNumber, func(record sessionLine) error {
 		switch {
+		case len(record.PerformanceUsage) > 0:
+			if state.performanceEnabled {
+				if ev, ok := codexUsagePerformance(record, state, path); ok {
+					out = append(out, ev)
+				}
+			}
 		case record.SessionMeta != nil:
 			applyTelemetrySessionMeta(state, record.SessionMeta)
 			if strings.TrimSpace(state.model) != "" && len(pending) > 0 {

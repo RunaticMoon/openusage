@@ -106,6 +106,9 @@ type sessionLine struct {
 	TurnContext  *turnContextPayload
 	EventPayload *eventPayload
 	ResponseItem *responseItemPayload
+	// Decoded only by the opt-in telemetry performance path. Ordinary usage
+	// keeps its established token_count arithmetic unchanged.
+	PerformanceUsage json.RawMessage
 }
 
 func walkSessionFile(path string, fn func(sessionLine) error) error {
@@ -191,6 +194,7 @@ func decodeSessionLine(line []byte, lineNumber int) (sessionLine, bool) {
 	if !bytes.Contains(line, []byte(`"type":"event_msg"`)) &&
 		!bytes.Contains(line, []byte(`"type":"turn_context"`)) &&
 		!bytes.Contains(line, []byte(`"type":"session_meta"`)) &&
+		!bytes.Contains(line, []byte(`"type":"token_usage_record"`)) &&
 		!bytes.Contains(line, []byte(`"type":"response_item"`)) {
 		return sessionLine{}, false
 	}
@@ -229,6 +233,8 @@ func decodeSessionLine(line []byte, lineNumber int) (sessionLine, bool) {
 			return sessionLine{}, false
 		}
 		record.ResponseItem = &item
+	case "token_usage_record":
+		record.PerformanceUsage = event.Payload
 	default:
 		return sessionLine{}, false
 	}

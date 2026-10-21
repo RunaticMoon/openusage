@@ -19,10 +19,14 @@ func (s *Service) computeReadModel(
 	}
 	tw := normalizeReadModelTimeWindow(req.TimeWindow)
 	result, err := telemetry.ApplyCanonicalTelemetryViewWithOptions(ctx, s.cfg.DBPath, templates, telemetry.ReadModelOptions{
-		ProviderLinks: req.ProviderLinks,
-		Since:         tw.Since(),
-		TodaySince:    core.LocalMidnight(),
-		TimeWindow:    tw,
+		ProviderLinks:               req.ProviderLinks,
+		Since:                       tw.Since(),
+		TodaySince:                  core.LocalMidnight(),
+		TimeWindow:                  tw,
+		PerformanceEnabled:          s.cfg.Performance.Enabled,
+		PerformanceBufferMinutes:    s.cfg.Performance.WindowMinutes(),
+		PerformanceExportIntervalMS: int64(s.cfg.Export.IntervalSeconds) * 1000,
+		Now:                         s.now(),
 	})
 	core.Tracef("[read_model_perf] computeReadModel TOTAL: %dms (window=%s, accounts=%d, results=%d)",
 		time.Since(start).Milliseconds(), tw, len(req.Accounts), len(result))

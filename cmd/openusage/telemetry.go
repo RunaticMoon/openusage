@@ -27,6 +27,7 @@ func newTelemetryCommand() *cobra.Command {
 
 	cmd.AddCommand(newTelemetryHookCommand())
 	cmd.AddCommand(newTelemetryDaemonCommand())
+	cmd.AddCommand(newPerformanceCommand())
 
 	return cmd
 }
@@ -229,6 +230,7 @@ func newTelemetryDaemonCommand() *cobra.Command {
 			PollInterval:    resolvedPoll,
 			Verbose:         verbose,
 			Export:          cfgFile.Export,
+			Performance:     cfgFile.Telemetry.Performance,
 		})
 	}
 
