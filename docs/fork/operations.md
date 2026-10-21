@@ -151,8 +151,11 @@ atomically replace reviewed files/current symlink, reload/start and check servic
 presence. The original binary is explicitly backed up and the old installation
 is not removed. The command does not claim actual usage collection merely
 because a process started. If it fails, the printed private backup location is
-the recovery point; inspect service state before retrying. It does not silently
-restore a database or hide a failed service start.
+the recovery point. A failed systemd start or launchd bootstrap can leave some or
+all managed services stopped; there is **no automatic rollback**. Inspect actual
+service state, then use the explicit rollback command with the reported backup
+after the appropriate recovery approval. The helper does not silently restore
+a database or hide a failed service start.
 
 Afterward verify the executable used by the running service and original
 `hub-view`/Hub API, per-provider collection success, last real usage event,
@@ -187,7 +190,10 @@ damaged local History. It stops the declared writers and restores via SQLite's
 backup API; newer events remain in the pre-rollback backup but are no longer in
 the active History. Agree on preservation/recollection before using it. The
 helper never restores an `opencode-source` database. Do not delete WAL/SHM files
-or replace a live database main file manually. A later schema migration would
+or replace a live database main file manually. Before requesting a telemetry DB
+restore, close **all** writers, including manually started daemons and maintenance
+tools; stopping only the services listed in a manifest does not prove that no
+other process holds the database. A later schema migration would
 need its own compatibility decision and approved recovery procedure.
 
 ## Evidence and limits

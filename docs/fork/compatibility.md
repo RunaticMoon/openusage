@@ -21,9 +21,10 @@ usage totals belong in the private operational handover.
 
 | Boundary | Evidence / required distinction |
 | --- | --- |
-| Installed OpenCode source | v2.1.1 was inspected read-only using a consistent private SQLite backup. Independent assistant-usage bucket aggregation and canonical replay passed; no raw DB/totals are published. |
+| Installed OpenCode source | v2.1.1 was inspected read-only using a consistent private SQLite backup. Independent assistant-usage bucket aggregation and canonical storage replay passed; no raw DB/totals are published. This does not yet establish correct OpenCode tile projection for a different billing provider. |
 | SQLite old/current schemas | Explicit schema detection, legacy and v2 fixtures, WAL visibility and unsupported-schema diagnostics are covered by the SQLite compatibility patch. Empty/no-usage state differs from unsupported structure. |
 | Provider/account mapping | Preserve tool, billing provider, model, session and stable original IDs; fixtures cover cache fields and reasoning. Missing fields are not silently converted into an invented complete total. |
+| OpenCode snapshot projection | An additional read-filter defect was found: canonical OpenCode events attributed to a billing provider such as Anthropic can be filtered out of the OpenCode tile. A separate source/account projection fix is being prepared. Do not mark real OpenCode tile/Hub usage complete until its final commit and runtime tests pass. |
 | Repeated/partial usage | Stable message IDs and mutable-row revisions address later final values and Hook/DB replay. Check the update patch and canonical replay evidence; do not add request values to session cumulatives. |
 | Database open errors | Store-open failures preserve original data instead of treating every error as corruption. Lock, read-only, directory/permission, invalid header and migration/schema errors need distinct handling. |
 | OpenCode plugin | The rendered plugin factory/lifecycle and usage delivery have dedicated contract tests. A plugin source patch does not prove the existing operational hook was replaced or that every host credential path works. |
