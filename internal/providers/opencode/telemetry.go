@@ -3,6 +3,7 @@ package opencode
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -157,6 +158,12 @@ func (p *Provider) Collect(ctx context.Context, opts shared.TelemetryCollectOpti
 		p.telemetryCacheMu.Unlock()
 		if fingerprint == "" || fingerprint != cachedFingerprint {
 			events, err := CollectTelemetryFromSQLite(ctx, dbPath)
+			optionalDefault := accountID == "" && (opts.Path("db_path", "") == "" || dbPath == defaults.Paths["db_path"])
+			if errors.Is(err, os.ErrNotExist) && optionalDefault {
+				// An uninstalled optional source is different from an explicitly
+				// configured source whose database has disappeared.
+				err = nil
+			}
 			if err != nil {
 				return out, fmt.Errorf("collect opencode sqlite telemetry: %w", err)
 			}
@@ -166,7 +173,7 @@ func (p *Provider) Collect(ctx context.Context, opts shared.TelemetryCollectOpti
 			if err != nil {
 				return out, fmt.Errorf("fingerprint collected opencode sqlite telemetry: %w", err)
 			}
-			if fingerprintAfter != "" {
+			if fingerprintAfter != "" && fingerprintAfter == fingerprint {
 				p.telemetryCacheMu.Lock()
 				if p.telemetryDBFingerprints == nil {
 					p.telemetryDBFingerprints = make(map[string]string)
