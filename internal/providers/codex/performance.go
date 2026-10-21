@@ -18,6 +18,7 @@ func codexUsagePerformance(record sessionLine, state *telemetryParserState, path
 	var p struct {
 		ResponseID string `json:"response_id"`
 		SessionID  string `json:"session_id"`
+		ThreadID   string `json:"thread_id"`
 		TurnID     string `json:"turn_id"`
 		Usage      *struct {
 			Output *int64 `json:"output_tokens"`
@@ -33,7 +34,7 @@ func codexUsagePerformance(record sessionLine, state *telemetryParserState, path
 	at = at.UTC()
 	r := &core.PerformanceRequest{
 		ID: p.ResponseID, Namespace: "codex:response", SourceSystem: "codex",
-		SessionID: core.FirstNonEmpty(p.SessionID, state.sessionID), ModelID: state.model,
+		SessionID: core.FirstNonEmpty(p.ThreadID, p.SessionID, state.sessionID), ModelID: state.model,
 		BillingProviderID: state.upstreamProviderID, SourcePath: path,
 		AdapterVersion: "codex_token_usage_record_v1", OutputTokens: p.Usage.Output,
 		OutputBasis: "codex.token_usage_record.usage.output_tokens", Scope: core.ScopeModelRequest,
@@ -41,6 +42,15 @@ func codexUsagePerformance(record sessionLine, state *telemetryParserState, path
 		Outcome: core.OutcomeUnknown, Final: true, Revision: at.UnixMilli(), ObservedAt: at,
 		ExclusionReason: "native_request_timing_unavailable",
 		Evidence:        []string{"native_response_id", "per_response_usage", "no_request_timing", "settled_usage_outcome_unavailable"},
+	}
+	// Only a reviewed producer version is copied into metadata. Never retain
+	// arbitrary header contents as diagnostics. This is the session creation
+	// version; the DB does not independently identify a resumed process version.
+	if state.cliVersion == "0.163.0" {
+		r.Evidence = append(r.Evidence, "codex_cli_version:0.163.0")
+	}
+	if p.ThreadID != "" {
+		r.Evidence = append(r.Evidence, "native_thread_id")
 	}
 	return shared.TelemetryEvent{
 		SchemaVersion: "codex_performance_v1", Channel: shared.TelemetryChannelJSONL,

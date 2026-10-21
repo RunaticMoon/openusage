@@ -55,6 +55,7 @@ type sessionMetaPayload struct {
 	SessionID  string `json:"session_id,omitempty"`
 	Source     string `json:"source,omitempty"`
 	Originator string `json:"originator,omitempty"`
+	CLIVersion string `json:"cli_version,omitempty"`
 	Model      string `json:"model,omitempty"`
 	// ModelID is the alternative spelling some Codex versions emit in the
 	// session header. We pick whichever is non-empty when resolving the

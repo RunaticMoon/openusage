@@ -236,6 +236,10 @@ func queryPerformanceWithDB(ctx context.Context, db *sql.DB, namespace string, q
 				return nil, fmt.Errorf("performance: local projection exceeds %d records; narrow source/account/period filter", performance.MaxRecords)
 			}
 			entry.records[key] = performanceCacheRecord{request: r, occurred: at}
+			// The store already reconciled evidence and revocations. Replace its
+			// ring contribution verbatim; Upsert's observation merge would retain
+			// an older valid interval over an authoritative ambiguity update.
+			entry.ring.Remove(r)
 			if err := entry.ring.Upsert(r); err != nil {
 				rows.Close()
 				return nil, err

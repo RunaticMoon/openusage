@@ -190,10 +190,46 @@ func mergePerformanceObservation(old, in core.PerformanceRequest) core.Performan
 		out.OutputTokens = &v
 		out.OutputBasis = in.OutputBasis
 	}
+	// Completion evidence can arrive after usage without changing its native
+	// revision. Absence of that evidence on a later scan is not a retraction.
+	knownOutcome := func(outcome core.PerformanceOutcome) bool {
+		return outcome == core.OutcomeSuccess || outcome == core.OutcomeFailed
+	}
+	if out.Final && !knownOutcome(out.Outcome) {
+		if in.Final && in.Revision >= old.Revision && knownOutcome(in.Outcome) {
+			out.Outcome = in.Outcome
+		} else if old.Final && knownOutcome(old.Outcome) {
+			out.Outcome = old.Outcome
+		}
+	}
+	outcomeEnriched := in.Final && in.Revision >= old.Revision && knownOutcome(in.Outcome) &&
+		out.Outcome == in.Outcome && (!old.Final || old.Outcome != out.Outcome)
 	oldRank, newRank := performanceTimingRank(old), performanceTimingRank(in)
 	// A partial interval ends before the request is settled. Final output must
 	// never use that partial end, even when its timing basis ranks higher.
 	useNewTiming := (!out.Final || in.Final) && ((newRank > oldRank) || (replace && in.TimingBasis == old.TimingBasis && newRank >= oldRank && in.TimingStatus != core.TimingMissing))
+	// A positive contradiction can revoke an inferred association even at the
+	// same usage revision. Missing logs cannot. Keep the revocation sticky for
+	// that revision so replaying earlier valid evidence cannot resurrect it.
+	inferredRevoked := func(r core.PerformanceRequest) bool {
+		return r.TimingBasis == core.TimingInferredLogBoundary &&
+			(r.TimingStatus == core.TimingAmbiguous || r.TimingStatus == core.TimingInvalid)
+	}
+	if outcomeEnriched && oldRank == 0 && newRank == 0 && !inferredRevoked(old) {
+		// A known completion may still lack its start. Promote that more precise
+		// diagnostic without claiming a duration or retaining "no completion".
+		useNewTiming = true
+	}
+	// A completed response whose JSONL identity has not arrived is a temporary
+	// association barrier, not proof that the prior association was false.
+	const recoverableBoundary = "ambiguous_unmapped_completion"
+	stickyRevocation := old.Final && inferredRevoked(old) && old.ExclusionReason != recoverableBoundary && in.Revision <= old.Revision
+	if stickyRevocation && in.TimingBasis == core.TimingInferredLogBoundary {
+		useNewTiming = false
+	}
+	if in.Final && in.Revision >= old.Revision && inferredRevoked(in) && old.TimingBasis == core.TimingInferredLogBoundary && (!stickyRevocation || in.ExclusionReason != recoverableBoundary) {
+		useNewTiming = true
+	}
 	if out.Final && !old.Final {
 		useNewTiming = true
 	}
@@ -206,6 +242,9 @@ func mergePerformanceObservation(old, in core.PerformanceRequest) core.Performan
 		out.Scope = in.Scope
 		out.ExclusionReason = in.ExclusionReason
 		out.Evidence = append([]string(nil), in.Evidence...)
+		if in.AdapterVersion != "" {
+			out.AdapterVersion = in.AdapterVersion
+		}
 	} else {
 		out.StartedAt = old.DeepClone().StartedAt
 		out.EndedAt = old.DeepClone().EndedAt
@@ -215,6 +254,18 @@ func mergePerformanceObservation(old, in core.PerformanceRequest) core.Performan
 		out.Scope = old.Scope
 		out.ExclusionReason = old.ExclusionReason
 		out.Evidence = append([]string(nil), old.Evidence...)
+		if old.AdapterVersion != "" {
+			out.AdapterVersion = old.AdapterVersion
+		}
+	}
+	if outcomeEnriched {
+		// Evidence is already sanitized at ingestion. Normalize again to keep
+		// the combined allowlisted codes bounded and deduplicated.
+		out.Evidence = append(append([]string(nil), in.Evidence...), out.Evidence...)
+		out.Evidence = performance.NormalizeRequest(out).Evidence
+		if in.AdapterVersion != "" {
+			out.AdapterVersion = in.AdapterVersion
+		}
 	}
 	return out
 }

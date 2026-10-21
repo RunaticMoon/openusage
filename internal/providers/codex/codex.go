@@ -35,6 +35,7 @@ type Provider struct {
 	providerbase.Base
 	telemetryCacheMu             sync.Mutex
 	telemetryCache               map[string]*telemetryCacheEntry
+	nativeTiming                 map[string]*codexTimingCache
 	telemetryBaselineInitialized bool
 	creditHistoryMu              sync.Mutex
 	creditHistory                map[string][]creditUsageObservation
