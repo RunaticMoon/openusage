@@ -35,6 +35,7 @@ type usageViewEvent struct {
 	SourceSystem, SourceChannel, SourcePayload              string
 	Input, Output, Reasoning, CacheRead, CacheWrite         float64
 	Total, ActivityTotal, Cost, Requests                    float64
+	TokenSplitKnown                                         bool
 	logicalKey                                              string
 	sourcePriority, qualityScore                            int
 }
@@ -89,7 +90,9 @@ const usageViewEventSelect = `
 	           COALESCE(reasoning_tokens, 0) + COALESCE(cache_read_tokens, 0) + COALESCE(cache_write_tokens, 0)),
 	       COALESCE(total_tokens, 0), COALESCE(cost_usd, 0), COALESCE(requests, 1),
 	       COALESCE(tool_name, ''), status, dedup_key,
-	       COALESCE(source_system, ''), COALESCE(source_channel, ''), COALESCE(source_payload, '{}')`
+	       COALESCE(source_system, ''), COALESCE(source_channel, ''), COALESCE(source_payload, '{}'),
+	       (cache_read_tokens IS NOT NULL OR cache_write_tokens IS NOT NULL) AND
+	       (total_tokens IS NOT NULL OR (input_tokens IS NOT NULL AND output_tokens IS NOT NULL))`
 
 type usageEventRowScanner interface{ Scan(...any) error }
 
@@ -101,7 +104,7 @@ func scanUsageViewEvent(row usageEventRowScanner) (usageViewEvent, error) {
 		&e.ModelRaw, &e.ModelCanonical, &e.Input, &e.Output, &e.Reasoning,
 		&e.CacheRead, &e.CacheWrite, &e.Total, &e.ActivityTotal, &e.Cost,
 		&e.Requests, &e.ToolName, &e.Status, &e.DedupKey, &e.SourceSystem,
-		&e.SourceChannel, &e.SourcePayload,
+		&e.SourceChannel, &e.SourcePayload, &e.TokenSplitKnown,
 	); err != nil {
 		return e, fmt.Errorf("scan incremental usage event: %w", err)
 	}
@@ -493,6 +496,14 @@ func (a *usageAccumulator) apply(e usageViewEvent, sign float64) {
 		d.CostUSD += sign * e.Cost
 		d.Requests += sign * requests
 		d.Tokens += sign * e.Total
+		cached := e.CacheRead + e.CacheWrite
+		if e.TokenSplitKnown && e.Total >= cached && cached >= 0 {
+			d.WorkTokens += sign * (e.Total - cached)
+			d.CachedTokens += sign * cached
+			d.TokenSplitSamples += int(sign)
+		} else {
+			d.TokenSplitMissing += int(sign)
+		}
 		addDaily(a.modelDaily, sanitizeMetricID(model), day, sign*requests)
 		addDaily(a.sourceDaily, sanitizeMetricID(client), day, sign*requests)
 		addDaily(a.clientDaily, sanitizeMetricID(client), day, sign*requests)

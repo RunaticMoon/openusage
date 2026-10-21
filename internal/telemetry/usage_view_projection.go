@@ -75,7 +75,8 @@ func applyUsageViewToSnapshot(snap *core.UsageSnapshot, agg *telemetryUsageAgg, 
 			strings.HasPrefix(key, "tokens_client_") ||
 			key == "analytics_cost" ||
 			key == "analytics_requests" ||
-			key == "analytics_tokens" {
+			key == "analytics_tokens" || key == "analytics_work_tokens" ||
+			key == "analytics_cached_tokens" || key == "analytics_token_split_partial" {
 			delete(snap.DailySeries, key)
 		}
 	}
@@ -288,6 +289,18 @@ func applyUsageViewToSnapshot(snap *core.UsageSnapshot, agg *telemetryUsageAgg, 
 	snap.DailySeries["analytics_cost"] = pointsFromDaily(agg.Daily, func(point telemetryDayPoint) float64 { return point.CostUSD })
 	snap.DailySeries["analytics_requests"] = pointsFromDaily(agg.Daily, func(point telemetryDayPoint) float64 { return point.Requests })
 	snap.DailySeries["analytics_tokens"] = pointsFromDaily(agg.Daily, func(point telemetryDayPoint) float64 { return point.Tokens })
+	// Keep an absent cache observation distinct from measured zero. A mixed day
+	// exports only its measured subtotal and marks coverage explicitly.
+	for _, day := range agg.Daily {
+		if day.TokenSplitSamples == 0 {
+			continue
+		}
+		snap.DailySeries["analytics_work_tokens"] = append(snap.DailySeries["analytics_work_tokens"], core.TimePoint{Date: day.Day, Value: day.WorkTokens})
+		snap.DailySeries["analytics_cached_tokens"] = append(snap.DailySeries["analytics_cached_tokens"], core.TimePoint{Date: day.Day, Value: day.CachedTokens})
+		if day.TokenSplitMissing > 0 {
+			snap.DailySeries["analytics_token_split_partial"] = append(snap.DailySeries["analytics_token_split_partial"], core.TimePoint{Date: day.Day, Value: 1})
+		}
+	}
 
 	for model, series := range agg.ModelDaily {
 		snap.DailySeries["usage_model_"+sanitizeMetricID(model)] = series
