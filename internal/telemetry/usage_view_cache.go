@@ -168,6 +168,15 @@ func loadUsageViewCached(
 	if entry.state != nil && (entry.state.filter.Since != filter.Since || entry.state.filter.TodaySince != filter.TodaySince) {
 		return nil, maxRowID, count, false, nil
 	}
+	if entry.state != nil {
+		// Mutable OpenCode v2 rows keep the same rowid and count when their
+		// final usage arrives. Let the existing incremental reader consume the
+		// explicit revision signal instead of returning a stale fingerprint hit.
+		pending, err := hasPendingOpenCodeV2Revision(ctx, db, filter, entry.state.changeSeq)
+		if err != nil || pending {
+			return nil, maxRowID, count, false, err
+		}
+	}
 	core.Tracef("[usage_view_cache] hit providers=%v account=%s maxRowID=%d count=%d age=%s",
 		filter.ProviderIDs, filter.AccountID, entry.maxRowID, entry.count, time.Since(entry.insertedAt))
 	return entry.agg, maxRowID, count, true, nil

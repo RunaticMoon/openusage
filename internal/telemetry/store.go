@@ -386,7 +386,8 @@ func (s *Store) Ingest(ctx context.Context, req IngestRequest) (IngestResult, er
 		return IngestResult{}, fmt.Errorf("telemetry: lookup dedup key: %w", err)
 	}
 	if found {
-		if enrichErr := enrichEventByDedupKey(ctx, tx, dedupKey, norm); enrichErr != nil {
+		updated, enrichErr := enrichEventByDedupKey(ctx, tx, dedupKey, norm, now)
+		if enrichErr != nil {
 			return IngestResult{}, fmt.Errorf("telemetry: enrich dedup event: %w", enrichErr)
 		}
 		if commitErr := tx.Commit(); commitErr != nil {
@@ -395,6 +396,7 @@ func (s *Store) Ingest(ctx context.Context, req IngestRequest) (IngestResult, er
 		return IngestResult{
 			Status:     "accepted",
 			Deduped:    true,
+			Updated:    updated,
 			EventID:    existing.EventID,
 			RawEventID: existing.RawEventID,
 		}, nil
@@ -465,7 +467,8 @@ func (s *Store) Ingest(ctx context.Context, req IngestRequest) (IngestResult, er
 			if !found {
 				return IngestResult{}, fmt.Errorf("telemetry: dedup event disappeared for key %q", dedupKey)
 			}
-			if enrichErr := enrichEventByDedupKey(ctx, tx, dedupKey, norm); enrichErr != nil {
+			updated, enrichErr := enrichEventByDedupKey(ctx, tx, dedupKey, norm, now)
+			if enrichErr != nil {
 				return IngestResult{}, fmt.Errorf("telemetry: enrich dedup event: %w", enrichErr)
 			}
 			if commitErr := tx.Commit(); commitErr != nil {
@@ -474,6 +477,7 @@ func (s *Store) Ingest(ctx context.Context, req IngestRequest) (IngestResult, er
 			return IngestResult{
 				Status:     "accepted",
 				Deduped:    true,
+				Updated:    updated,
 				EventID:    existing.EventID,
 				RawEventID: existing.RawEventID,
 			}, nil
@@ -515,28 +519,33 @@ func findEventByDedupKey(ctx context.Context, tx *sql.Tx, dedupKey string) (stor
 }
 
 type storedCanonicalEvent struct {
-	EventID        string
-	SourceChannel  string
-	ProviderID     sql.NullString
-	AccountID      sql.NullString
-	WorkspaceID    sql.NullString
-	SessionID      sql.NullString
-	TurnID         sql.NullString
-	MessageID      sql.NullString
-	ToolCallID     sql.NullString
-	ModelRaw       sql.NullString
-	ModelCanonical sql.NullString
-	ModelLineageID sql.NullString
-	InputTokens    sql.NullInt64
-	OutputTokens   sql.NullInt64
-	Reasoning      sql.NullInt64
-	CacheRead      sql.NullInt64
-	CacheWrite     sql.NullInt64
-	TotalTokens    sql.NullInt64
-	CostUSD        sql.NullFloat64
-	Requests       sql.NullInt64
-	ToolName       sql.NullString
-	Status         string
+	EventID             string
+	RawEventID          string
+	SourceSystem        string
+	SourceSchemaVersion string
+	SourcePayload       string
+	SourcePayloadHash   string
+	SourceChannel       string
+	ProviderID          sql.NullString
+	AccountID           sql.NullString
+	WorkspaceID         sql.NullString
+	SessionID           sql.NullString
+	TurnID              sql.NullString
+	MessageID           sql.NullString
+	ToolCallID          sql.NullString
+	ModelRaw            sql.NullString
+	ModelCanonical      sql.NullString
+	ModelLineageID      sql.NullString
+	InputTokens         sql.NullInt64
+	OutputTokens        sql.NullInt64
+	Reasoning           sql.NullInt64
+	CacheRead           sql.NullInt64
+	CacheWrite          sql.NullInt64
+	TotalTokens         sql.NullInt64
+	CostUSD             sql.NullFloat64
+	Requests            sql.NullInt64
+	ToolName            sql.NullString
+	Status              string
 }
 
 func loadCanonicalEventByDedupKey(ctx context.Context, tx *sql.Tx, dedupKey string) (storedCanonicalEvent, error) {
@@ -564,7 +573,9 @@ func loadCanonicalEventByDedupKey(ctx context.Context, tx *sql.Tx, dedupKey stri
 			e.requests,
 			e.tool_name,
 			e.status,
-			COALESCE(r.source_channel, '')
+			COALESCE(r.source_channel, ''), e.raw_event_id, r.source_system, r.source_schema_version,
+			CASE WHEN r.source_system = 'opencode' AND r.source_schema_version = 'opencode_sqlite_v2' THEN r.source_payload ELSE '' END,
+			r.source_payload_hash
 		FROM usage_events e
 		JOIN usage_raw_events r ON r.raw_event_id = e.raw_event_id
 		WHERE e.dedup_key = ?
@@ -591,20 +602,43 @@ func loadCanonicalEventByDedupKey(ctx context.Context, tx *sql.Tx, dedupKey stri
 		&row.Requests,
 		&row.ToolName,
 		&row.Status,
-		&row.SourceChannel,
+		&row.SourceChannel, &row.RawEventID, &row.SourceSystem, &row.SourceSchemaVersion, &row.SourcePayload, &row.SourcePayloadHash,
 	)
 	return row, err
 }
 
 // enrichEventByDedupKey merges duplicate canonical fields with source priority.
-// Hook payloads take precedence over file/sqlite events when both provide values.
-func enrichEventByDedupKey(ctx context.Context, tx *sql.Tx, dedupKey string, norm IngestRequest) error {
+// Hook payloads normally take precedence. OpenCode v2 message rows are mutable
+// authoritative snapshots, so their revisions replace earlier partial values.
+func enrichEventByDedupKey(ctx context.Context, tx *sql.Tx, dedupKey string, norm IngestRequest, observedAt time.Time) (bool, error) {
 	current, err := loadCanonicalEventByDedupKey(ctx, tx, dedupKey)
 	if err != nil {
-		return err
+		return false, err
 	}
 
-	override := sourceChannelPriority(norm.SourceChannel) > sourceChannelPriority(SourceChannel(current.SourceChannel))
+	incomingV2 := isOpenCodeV2Message(norm.SourceSystem, norm.SourceChannel, norm.SourceSchemaVersion, norm.EventType, norm.MessageID)
+	currentV2 := isOpenCodeV2Message(SourceSystem(current.SourceSystem), SourceChannel(current.SourceChannel), current.SourceSchemaVersion, norm.EventType, norm.MessageID)
+	// Once a v2 SQLite row is authoritative, delayed hook/v1 snapshots cannot
+	// replace it. Different tools and all other providers retain their policy.
+	if currentV2 && !incomingV2 {
+		return false, nil
+	}
+	var payload []byte
+	var payloadHash string
+	rawChanged := false
+	if incomingV2 {
+		payload, err = marshalPayload(norm.Payload)
+		if err != nil {
+			return false, err
+		}
+		if currentV2 && openCodeRevision(payload) < openCodeRevision([]byte(current.SourcePayload)) {
+			return false, nil
+		}
+		hash := sha256.Sum256(payload)
+		payloadHash = hex.EncodeToString(hash[:])
+		rawChanged = !currentV2 || payloadHash != current.SourcePayloadHash
+	}
+	override := incomingV2 || sourceChannelPriority(norm.SourceChannel) > sourceChannelPriority(SourceChannel(current.SourceChannel))
 
 	providerID := chooseString(current.ProviderID, norm.ProviderID, override)
 	accountID := chooseString(current.AccountID, norm.AccountID, override)
@@ -635,7 +669,7 @@ func enrichEventByDedupKey(ctx context.Context, tx *sql.Tx, dedupKey string, nor
 	// index covering them, and all of it lands in the WAL. Issuing it for a
 	// merge that changes nothing turned steady-state ingest into sustained
 	// write amplification (#318), so compare first and skip the no-op.
-	if !canonicalEventDiffers(current, canonicalEventFields{
+	canonicalChanged := canonicalEventDiffers(current, canonicalEventFields{
 		providerID:       providerID,
 		accountID:        accountID,
 		workspaceID:      workspaceID,
@@ -656,10 +690,30 @@ func enrichEventByDedupKey(ctx context.Context, tx *sql.Tx, dedupKey string, nor
 		costUSD:          costUSD,
 		requests:         requests,
 		status:           status,
-	}) {
-		return nil
+	})
+	if !canonicalChanged && !rawChanged {
+		return false, nil
 	}
-
+	if incomingV2 {
+		// Coalesce to one update row while allocating a fresh sequence. INSERT
+		// OR IGNORE in the existing triggers otherwise hides later revisions
+		// from incremental readers that already consumed the first update.
+		if _, err := tx.ExecContext(ctx, `DELETE FROM usage_event_changes WHERE event_id = ? AND operation = 'update'`, current.EventID); err != nil {
+			return false, err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO usage_event_changes(event_id, operation) VALUES (?, 'update')`, current.EventID); err != nil {
+			return false, err
+		}
+	}
+	if rawChanged {
+		if _, err := tx.ExecContext(ctx, `UPDATE usage_raw_events SET source_system = ?, source_channel = ?, source_schema_version = ?, source_payload = ?, source_payload_hash = ?, ingested_at = ? WHERE raw_event_id = ?`,
+			string(norm.SourceSystem), string(norm.SourceChannel), norm.SourceSchemaVersion, string(payload), payloadHash, observedAt.Format(time.RFC3339Nano), current.RawEventID); err != nil {
+			return false, err
+		}
+	}
+	if !canonicalChanged {
+		return incomingV2, nil
+	}
 	_, err = tx.ExecContext(ctx, `
 		UPDATE usage_events
 		SET
@@ -707,7 +761,7 @@ func enrichEventByDedupKey(ctx context.Context, tx *sql.Tx, dedupKey string, nor
 		string(status),
 		current.EventID,
 	)
-	return err
+	return incomingV2 && err == nil, err
 }
 
 // canonicalEventFields is the merged result enrichEventByDedupKey is about to
@@ -1082,14 +1136,22 @@ func (s *Store) PruneRawEventPayloads(ctx context.Context, retentionHours int, l
 		return 0, nil
 	}
 	cutoff := s.retentionCutoff(time.Duration(retentionHours) * time.Hour)
+	// Preserve only the source revision for mutable OpenCode v2 messages.
+	// source_payload_hash continues to identify the ORIGINAL observed payload,
+	// not this compact marker, so unchanged replays do not restore raw data.
 	res, err := s.db.ExecContext(ctx, `
-		UPDATE usage_raw_events
-		SET source_payload = '{}'
-		WHERE raw_event_id IN (
-			SELECT raw_event_id
+		WITH compacted AS (
+			SELECT raw_event_id, ingested_at, source_payload,
+			CASE WHEN source_system = 'opencode' AND source_channel = 'sqlite'
+			  AND source_schema_version = 'opencode_sqlite_v2'
+			  AND json_valid(source_payload)
+			  AND EXISTS (SELECT 1 FROM usage_events e WHERE e.raw_event_id = usage_raw_events.raw_event_id AND e.event_type = 'message_usage')
+			THEN CASE WHEN json_type(source_payload, '$.db.time_updated') = 'integer'
+			  THEN json_object('db', json_object('time_updated', json_extract(source_payload, '$.db.time_updated')))
+			  ELSE '{}' END
+			ELSE '{}' END AS retained_payload
 			FROM usage_raw_events
 			WHERE ingested_at < ?
-			  AND source_payload != '{}'
 			  AND raw_event_id NOT IN (
 				SELECT e.raw_event_id
 				FROM usage_events e
@@ -1107,9 +1169,14 @@ func (s *Store) PruneRawEventPayloads(ctx context.Context, retentionHours int, l
 				 AND e.occurred_at = latest.occurred_at
 				WHERE e.event_type = 'limit_snapshot'
 			  )
-			ORDER BY ingested_at ASC
-			LIMIT ?
+		), candidates AS (
+			SELECT raw_event_id, retained_payload FROM compacted
+			WHERE source_payload != retained_payload
+			ORDER BY ingested_at ASC LIMIT ?
 		)
+		UPDATE usage_raw_events
+		SET source_payload = (SELECT retained_payload FROM candidates WHERE candidates.raw_event_id = usage_raw_events.raw_event_id)
+		WHERE raw_event_id IN (SELECT raw_event_id FROM candidates)
 	`, cutoff, limit)
 	if err != nil {
 		return 0, fmt.Errorf("telemetry: prune raw event payloads: %w", err)
