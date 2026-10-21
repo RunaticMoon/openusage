@@ -57,6 +57,7 @@ type UsageSnapshot struct {
 	ModelUsage  []ModelUsageRecord     `json:"model_usage,omitempty"`  // per-model usage rows with canonical IDs
 	DailySeries map[string][]TimePoint `json:"daily_series,omitempty"` // time-indexed data (e.g. "messages", "cost", "tokens_<model>")
 	Message     string                 `json:"message,omitempty"`      // human-readable summary
+	Performance *PerformanceSnapshot   `json:"performance,omitempty"`  // optional log-derived response throughput
 }
 
 func NewUsageSnapshot(providerID, accountID string) UsageSnapshot {
@@ -144,6 +145,10 @@ func (s UsageSnapshot) DeepClone() UsageSnapshot {
 	clone.Attributes = maps.Clone(s.Attributes)
 	clone.Diagnostics = maps.Clone(s.Diagnostics)
 	clone.Raw = maps.Clone(s.Raw)
+	if s.Performance != nil {
+		performance := s.Performance.DeepClone()
+		clone.Performance = &performance
+	}
 
 	if s.ModelUsage != nil {
 		clone.ModelUsage = make([]ModelUsageRecord, len(s.ModelUsage))

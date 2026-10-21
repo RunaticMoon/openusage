@@ -46,6 +46,9 @@ const (
 var ErrHookUnsupported = errors.New("hook parsing not supported")
 
 type TelemetryCollectOptions struct {
+	// PerformanceEnabled opts in to request timing enrichment during the same scan.
+	PerformanceEnabled bool
+
 	Paths     map[string]string
 	PathLists map[string][]string
 }
@@ -95,9 +98,11 @@ type TelemetryEvent struct {
 
 	core.TokenUsage
 
-	ToolName string
-	Status   TelemetryStatus
-	Payload  map[string]any
+	ToolName        string
+	Status          TelemetryStatus
+	Payload         map[string]any
+	PerformanceOnly bool // metadata enrichment; never contributes to token/cost accounting
+	Performance     *core.PerformanceRequest
 }
 
 var timestampLayouts = []string{
