@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +21,7 @@ type Provider struct {
 	providerbase.Base
 	mu                  sync.Mutex
 	usageAPICache       *usageResponse // last successful Usage API response
+	usageAPIObservedAt  time.Time      // observation time of usageAPICache, never a retry time
 	lastUsageAuthSource string         // name of the usageAuthSource that last succeeded; empty until a first success
 
 	jsonlCacheMu sync.Mutex
@@ -359,6 +361,12 @@ func (p *Provider) DetailWidget() core.DetailWidget {
 
 // HasChanged reports whether any of the local data sources have been modified since the given time.
 func (p *Provider) HasChanged(acct core.AccountConfig, since time.Time) (bool, error) {
+	// Remote subscription usage can change on another machine while all local
+	// session files remain unchanged. The daemon still applies its adaptive
+	// polling interval; credential presence only bypasses the local-file gate.
+	if p.hasUsageAPISource() {
+		return true, nil
+	}
 	home, _ := os.UserHomeDir()
 	claudeDir := filepath.Join(home, ".claude")
 	if override := acct.Hint("claude_dir", ""); override != "" {
@@ -374,6 +382,29 @@ func (p *Provider) HasChanged(acct core.AccountConfig, since time.Time) (bool, e
 		acct.Path("account_config", filepath.Join(home, ".claude.json")),
 		filepath.Join(claudeDir, "settings.json"),
 	}, since), nil
+}
+
+func (p *Provider) hasUsageAPISource() bool {
+	p.mu.Lock()
+	hadUsage := p.usageAPICache != nil
+	p.mu.Unlock()
+	if hadUsage {
+		return true // retry an expired/removed credential without refreshing cached quota age
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	paths := []string{filepath.Join(home, ".claude", ".credentials.json")}
+	if runtime.GOOS == "darwin" {
+		paths = append(paths, filepath.Join(home, "Library", "Application Support", "Claude", "Cookies"))
+	}
+	for _, path := range paths {
+		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *Provider) Fetch(ctx context.Context, acct core.AccountConfig) (core.UsageSnapshot, error) {
@@ -598,8 +629,13 @@ func (p *Provider) tryUsageAuthSource(ctx context.Context, src usageAuthSource, 
 // cache and applies it to snap. source names which auth source produced it
 // (e.g. "cookie", "oauth").
 func (p *Provider) applyFetchedUsage(usage *usageResponse, snap *core.UsageSnapshot, source string) {
-	p.setCachedUsage(usage)
-	applyUsageResponse(usage, snap, time.Now())
+	observedAt := snap.Timestamp
+	if observedAt.IsZero() {
+		observedAt = time.Now().UTC()
+		snap.Timestamp = observedAt
+	}
+	p.setCachedUsage(usage, observedAt)
+	applyUsageResponse(usage, snap, observedAt)
 	cacheFiveHourFromSnapshot(snap)
 	snap.Raw["usage_api_ok"] = "true"
 	snap.Raw["usage_api_source"] = source
@@ -608,11 +644,15 @@ func (p *Provider) applyFetchedUsage(usage *usageResponse, snap *core.UsageSnaps
 // applyCachedUsage applies the last cached usage response to snap, if any,
 // reporting whether a cached value was available.
 func (p *Provider) applyCachedUsage(snap *core.UsageSnapshot) bool {
-	cached := p.getCachedUsage()
-	if cached == nil {
+	cached, observedAt := p.getCachedUsage()
+	if cached == nil || observedAt.IsZero() {
 		return false
 	}
-	applyUsageResponse(cached, snap, time.Now())
+	// The snapshot also contains local usage, but the wire contract has one
+	// timestamp. Preserve the older quota observation for every consumer rather
+	// than making an authentication failure look like a successful fresh read.
+	snap.Timestamp = observedAt
+	applyUsageResponse(cached, snap, observedAt)
 	snap.Raw["usage_api_cached"] = "true"
 	return true
 }
@@ -631,16 +671,17 @@ func cacheFiveHourFromSnapshot(snap *core.UsageSnapshot) {
 	}
 }
 
-func (p *Provider) getCachedUsage() *usageResponse {
+func (p *Provider) getCachedUsage() (*usageResponse, time.Time) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.usageAPICache
+	return p.usageAPICache, p.usageAPIObservedAt
 }
 
-func (p *Provider) setCachedUsage(u *usageResponse) {
+func (p *Provider) setCachedUsage(u *usageResponse, observedAt time.Time) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.usageAPICache = u
+	p.usageAPIObservedAt = observedAt.UTC()
 }
 
 func (p *Provider) getLastUsageAuthSource() string {

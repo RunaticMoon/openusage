@@ -35,6 +35,8 @@ func TestChangeDetectorProviders(t *testing.T) {
 // if a file is modified after `since`, HasChanged returns true.
 func TestChangeDetectorReturnsTrue_WhenFileModified(t *testing.T) {
 	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("USERPROFILE", tmpDir)
 	projectsDir := filepath.Join(tmpDir, "projects")
 	if err := os.MkdirAll(projectsDir, 0o755); err != nil {
 		t.Fatal(err)
