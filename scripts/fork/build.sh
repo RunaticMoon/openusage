@@ -5,9 +5,9 @@ cd "$(dirname "$0")/../.."
 export CGO_ENABLED=1
 export GOMAXPROCS="${GOMAXPROCS:-2}"
 fork_sha=$(git rev-parse HEAD)
-upstream_tag=v0.26.1
-upstream_sha=299e3dbffb5a6827bd89d9037ef8e483e5073bfa
-version="${FORK_VERSION:-0.26.1-fork.${fork_sha:0:12}}"
+base_fields=$(python3 scripts/fork/upstream_base.py "$fork_sha" --fields)
+read -r upstream_tag upstream_sha <<< "$base_fields"
+version="${FORK_VERSION:-${upstream_tag#v}-fork.${fork_sha:0:12}}"
 if [[ ! "$version" =~ ^[A-Za-z0-9._-]+$ ]]; then
   echo 'Invalid FORK_VERSION' >&2
   exit 1

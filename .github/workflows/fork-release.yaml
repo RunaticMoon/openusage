@@ -77,17 +77,29 @@ jobs:
         shell: bash
         run: |
           mkdir release
+          upstream_tag=''
+          upstream_sha=''
           for platform in linux_arm64 darwin_arm64; do
             dir="artifacts/openusage-$platform-$SHA"
             (cd "$dir" && sha256sum -c checksums.txt)
             test "$(jq -r .fork_sha "$dir/metadata.json")" = "$SHA"
+            base_tag=$(jq -r .upstream_base_tag "$dir/metadata.json")
+            base_sha=$(jq -r .upstream_base_sha "$dir/metadata.json")
+            release_version="${TAG#fork/}"
+            test "${release_version%-p*}" = "$base_tag"
+            if [ -n "$upstream_sha" ]; then
+              test "$upstream_tag" = "$base_tag"
+              test "$upstream_sha" = "$base_sha"
+            fi
+            upstream_tag="$base_tag"
+            upstream_sha="$base_sha"
             chmod +x "$dir/openusage" # Artifact transport does not preserve executable mode.
             tar -czf "release/openusage-${TAG#fork/}-$platform.tar.gz" -C "$dir" .
           done
           (cd release && sha256sum ./*.tar.gz > checksums.txt)
           cat > release-notes.txt <<EOF
           Reviewed fork source: $SHA
-          Upstream baseline: v0.26.1 / 299e3dbffb5a6827bd89d9037ef8e483e5073bfa
+          Verified upstream release base: $upstream_tag / $upstream_sha
           Patch registry, Go/toolchain/platform metadata and checksums are included in each archive.
           Both native ARM64 targets passed tests, race detection, build and version execution.
           These artifacts are unsigned. This draft does not install or deploy anything.

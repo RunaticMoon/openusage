@@ -49,10 +49,14 @@ bash scripts/fork/build.sh
 
 The build script emits `dist/fork/<os>_arm64/openusage`, checksums, native linkage
 information and JSON metadata. The version includes the fork SHA; metadata also
-identifies the original upstream baseline, Go version, platform and patch
-registry checksum. It runs `--version` without installing a service. The
-baseline is the fork's original base, not a claim that later upstream syncs have
-not been merged. Record those syncs in the patch registry. Artifacts are unsigned
+identifies the newest stable upstream tag already contained in the build SHA,
+Go version, platform and patch registry checksum. Before building, the selected
+tag's peeled commit is checked against the official upstream Git remote; fetch
+upstream tags first, and allow read-only GitHub access for this verification.
+After a stable release sync, the derived base and default fork version advance
+automatically. A manual early-commit sync still names the latest included stable
+release; its full fork SHA identifies the additional ancestry. The script runs
+`--version` without installing a service. Record syncs in the patch registry. Artifacts are unsigned
 unless a later documented signing process is added.
 
 Fork release tags use **`fork/v<version>-p<N>`**, for example
