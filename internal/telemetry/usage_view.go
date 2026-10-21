@@ -212,7 +212,7 @@ func applyCanonicalUsageViewWithDB(
 		if accountScope == "" {
 			accountScope = strings.TrimSpace(accountID)
 		}
-		if (strings.EqualFold(providerID, "opencode") || strings.EqualFold(providerID, "antigravity")) && accountScope != "" {
+		if (strings.EqualFold(providerID, "opencode") || strings.EqualFold(providerID, "antigravity") || strings.EqualFold(providerID, "dsh")) && accountScope != "" {
 			// Local tool profiles require both source and account boundaries.
 			// An empty profile must never inherit another profile's usage,
 			// even when it is the only account configured for this provider.

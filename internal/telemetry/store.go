@@ -574,7 +574,7 @@ func loadCanonicalEventByDedupKey(ctx context.Context, tx *sql.Tx, dedupKey stri
 			e.tool_name,
 			e.status,
 			COALESCE(r.source_channel, ''), e.raw_event_id, r.source_system, r.source_schema_version,
-			CASE WHEN r.source_system = 'opencode' AND r.source_schema_version = 'opencode_sqlite_v2' THEN r.source_payload ELSE '' END,
+			CASE WHEN (r.source_system = 'opencode' AND r.source_schema_version = 'opencode_sqlite_v2') OR (r.source_system = 'dsh' AND r.source_schema_version = 'dsh_jsonl_v4') THEN r.source_payload ELSE '' END,
 			r.source_payload_hash
 		FROM usage_events e
 		JOIN usage_raw_events r ON r.raw_event_id = e.raw_event_id
@@ -608,37 +608,37 @@ func loadCanonicalEventByDedupKey(ctx context.Context, tx *sql.Tx, dedupKey stri
 }
 
 // enrichEventByDedupKey merges duplicate canonical fields with source priority.
-// Hook payloads normally take precedence. OpenCode v2 message rows are mutable
-// authoritative snapshots, so their revisions replace earlier partial values.
+// Hook payloads normally take precedence. Explicitly supported mutable source
+// snapshots replace earlier values according to their monotonic revision.
 func enrichEventByDedupKey(ctx context.Context, tx *sql.Tx, dedupKey string, norm IngestRequest, observedAt time.Time) (bool, error) {
 	current, err := loadCanonicalEventByDedupKey(ctx, tx, dedupKey)
 	if err != nil {
 		return false, err
 	}
 
-	incomingV2 := isOpenCodeV2Message(norm.SourceSystem, norm.SourceChannel, norm.SourceSchemaVersion, norm.EventType, norm.MessageID)
-	currentV2 := isOpenCodeV2Message(SourceSystem(current.SourceSystem), SourceChannel(current.SourceChannel), current.SourceSchemaVersion, norm.EventType, norm.MessageID)
-	// Once a v2 SQLite row is authoritative, delayed hook/v1 snapshots cannot
-	// replace it. Different tools and all other providers retain their policy.
-	if currentV2 && !incomingV2 {
+	incomingAuthoritative := isAuthoritativeMessage(norm.SourceSystem, norm.SourceChannel, norm.SourceSchemaVersion, norm.EventType, norm.MessageID)
+	currentAuthoritative := isAuthoritativeMessage(SourceSystem(current.SourceSystem), SourceChannel(current.SourceChannel), current.SourceSchemaVersion, norm.EventType, norm.MessageID)
+	// Once a supported source revision is authoritative, other channels cannot
+	// replace it. All unrelated providers retain their existing merge policy.
+	if currentAuthoritative && !incomingAuthoritative {
 		return false, nil
 	}
 	var payload []byte
 	var payloadHash string
 	rawChanged := false
-	if incomingV2 {
+	if incomingAuthoritative {
 		payload, err = marshalPayload(norm.Payload)
 		if err != nil {
 			return false, err
 		}
-		if currentV2 && openCodeRevision(payload) < openCodeRevision([]byte(current.SourcePayload)) {
+		if currentAuthoritative && authoritativeRevision(norm.SourceSystem, payload) < authoritativeRevision(SourceSystem(current.SourceSystem), []byte(current.SourcePayload)) {
 			return false, nil
 		}
 		hash := sha256.Sum256(payload)
 		payloadHash = hex.EncodeToString(hash[:])
-		rawChanged = !currentV2 || payloadHash != current.SourcePayloadHash
+		rawChanged = !currentAuthoritative || payloadHash != current.SourcePayloadHash
 	}
-	override := incomingV2 || sourceChannelPriority(norm.SourceChannel) > sourceChannelPriority(SourceChannel(current.SourceChannel))
+	override := incomingAuthoritative || sourceChannelPriority(norm.SourceChannel) > sourceChannelPriority(SourceChannel(current.SourceChannel))
 
 	providerID := chooseString(current.ProviderID, norm.ProviderID, override)
 	accountID := chooseString(current.AccountID, norm.AccountID, override)
@@ -655,6 +655,11 @@ func enrichEventByDedupKey(ctx context.Context, tx *sql.Tx, dedupKey string, nor
 	inputTokens := chooseInt64(current.InputTokens, norm.InputTokens, override)
 	outputTokens := chooseInt64(current.OutputTokens, norm.OutputTokens, override)
 	reasoningTokens := chooseInt64(current.Reasoning, norm.ReasoningTokens, override)
+	if incomingAuthoritative && norm.SourceSystem == "dsh" {
+		// A DSH settlement replaces the complete accounting sample. Missing
+		// optional reasoning means unknown, not the previous revision's value.
+		reasoningTokens = norm.ReasoningTokens
+	}
 	cacheReadTokens := chooseInt64(current.CacheRead, norm.CacheReadTokens, override)
 	cacheWriteTokens := chooseInt64(current.CacheWrite, norm.CacheWriteTokens, override)
 	totalTokens := chooseInt64(current.TotalTokens, norm.TotalTokens, override)
@@ -694,7 +699,7 @@ func enrichEventByDedupKey(ctx context.Context, tx *sql.Tx, dedupKey string, nor
 	if !canonicalChanged && !rawChanged {
 		return false, nil
 	}
-	if incomingV2 {
+	if incomingAuthoritative {
 		// Coalesce to one update row while allocating a fresh sequence. INSERT
 		// OR IGNORE in the existing triggers otherwise hides later revisions
 		// from incremental readers that already consumed the first update.
@@ -712,7 +717,7 @@ func enrichEventByDedupKey(ctx context.Context, tx *sql.Tx, dedupKey string, nor
 		}
 	}
 	if !canonicalChanged {
-		return incomingV2, nil
+		return incomingAuthoritative, nil
 	}
 	_, err = tx.ExecContext(ctx, `
 		UPDATE usage_events
@@ -761,7 +766,7 @@ func enrichEventByDedupKey(ctx context.Context, tx *sql.Tx, dedupKey string, nor
 		string(status),
 		current.EventID,
 	)
-	return incomingV2 && err == nil, err
+	return incomingAuthoritative && err == nil, err
 }
 
 // canonicalEventFields is the merged result enrichEventByDedupKey is about to
@@ -1136,7 +1141,7 @@ func (s *Store) PruneRawEventPayloads(ctx context.Context, retentionHours int, l
 		return 0, nil
 	}
 	cutoff := s.retentionCutoff(time.Duration(retentionHours) * time.Hour)
-	// Preserve only the source revision for mutable OpenCode v2 messages.
+	// Preserve only the source revision for supported mutable messages.
 	// source_payload_hash continues to identify the ORIGINAL observed payload,
 	// not this compact marker, so unchanged replays do not restore raw data.
 	res, err := s.db.ExecContext(ctx, `
@@ -1148,6 +1153,12 @@ func (s *Store) PruneRawEventPayloads(ctx context.Context, retentionHours int, l
 			  AND EXISTS (SELECT 1 FROM usage_events e WHERE e.raw_event_id = usage_raw_events.raw_event_id AND e.event_type = 'message_usage')
 			THEN CASE WHEN json_type(source_payload, '$.db.time_updated') = 'integer'
 			  THEN json_object('db', json_object('time_updated', json_extract(source_payload, '$.db.time_updated')))
+			  ELSE '{}' END
+			WHEN source_system = 'dsh' AND source_channel = 'jsonl'
+			  AND source_schema_version = 'dsh_jsonl_v4' AND json_valid(source_payload)
+			  AND EXISTS (SELECT 1 FROM usage_events e WHERE e.raw_event_id = usage_raw_events.raw_event_id AND e.event_type = 'message_usage')
+			THEN CASE WHEN json_type(source_payload, '$.dsh.revision') = 'integer'
+			  THEN json_object('dsh', json_object('revision', json_extract(source_payload, '$.dsh.revision')))
 			  ELSE '{}' END
 			ELSE '{}' END AS retained_payload
 			FROM usage_raw_events

@@ -26,7 +26,7 @@ func openCodeRevision(payload []byte) int64 {
 	return revision
 }
 
-func hasPendingOpenCodeV2Revision(ctx context.Context, db *sql.DB, filter usageFilter, after int64) (bool, error) {
+func hasPendingAuthoritativeRevision(ctx context.Context, db *sql.DB, filter usageFilter, after int64) (bool, error) {
 	where, args := usageWhereClause("e", filter)
 	args = append([]any{after}, args...)
 	var pending bool
@@ -35,11 +35,12 @@ func hasPendingOpenCodeV2Revision(ctx context.Context, db *sql.DB, filter usageF
 		JOIN usage_events e ON e.event_id = c.event_id
 		JOIN usage_raw_events r ON r.raw_event_id = e.raw_event_id
 		WHERE c.seq > ? AND c.operation = 'update'
-		AND r.source_system = 'opencode' AND r.source_channel = 'sqlite'
-		AND r.source_schema_version = 'opencode_sqlite_v2'
+		AND ((r.source_system = 'opencode' AND r.source_channel = 'sqlite'
+		AND r.source_schema_version = 'opencode_sqlite_v2') OR
+		(r.source_system = 'dsh' AND r.source_channel = 'jsonl' AND r.source_schema_version = 'dsh_jsonl_v4'))
 		AND e.event_type = 'message_usage' AND `+where+`)`, args...).Scan(&pending)
 	if err != nil {
-		return false, fmt.Errorf("probe OpenCode v2 revisions: %w", err)
+		return false, fmt.Errorf("probe authoritative source revisions: %w", err)
 	}
 	return pending, nil
 }
