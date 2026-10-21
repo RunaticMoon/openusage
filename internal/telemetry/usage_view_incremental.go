@@ -423,7 +423,13 @@ func (a *usageAccumulator) apply(e usageViewEvent, sign float64) {
 		m.CacheWriteTokens += sign * e.CacheWrite
 		m.Reasoning += sign * e.Reasoning
 		m.TotalTokens += sign * e.Total
-		m.BillableTokens += sign * (e.Input + e.Output + e.Reasoning + e.CacheWrite)
+		billable := e.Input + e.Output + e.CacheWrite
+		// DSH reasoning is already included in output. Keep its detail, but
+		// preserve the existing additive policy for all other sources.
+		if !strings.EqualFold(strings.TrimSpace(e.SourceSystem), "dsh") {
+			billable += e.Reasoning
+		}
+		m.BillableTokens += sign * billable
 		m.CostUSD += sign * e.Cost
 		m.Requests += sign * requests
 		if today {

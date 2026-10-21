@@ -11,6 +11,14 @@ import (
 )
 
 func TestOpenCodeAccountProjectionPreservesVendorAndSourceBoundaries(t *testing.T) {
+	testLocalSourceAccountProjection(t, "opencode")
+}
+
+func TestDSHAccountProjectionPreservesVendorAndSourceBoundaries(t *testing.T) {
+	testLocalSourceAccountProjection(t, "dsh")
+}
+
+func testLocalSourceAccountProjection(t *testing.T, sourceID string) {
 	globalUsageViewCache.reset()
 	path := filepath.Join(t.TempDir(), "telemetry.db")
 	store, err := OpenStore(path)
@@ -37,27 +45,27 @@ func TestOpenCodeAccountProjectionPreservesVendorAndSourceBoundaries(t *testing.
 			t.Fatal(err)
 		}
 	}
-	add("opencode", "anthropic", "personal", 11)
-	add("opencode", "openai", "personal", 22)
-	add("opencode", "custom-vendor", "personal", 33)
-	add("opencode", "anthropic", "company", 777)
+	add(sourceID, "anthropic", "personal", 11)
+	add(sourceID, "openai", "personal", 22)
+	add(sourceID, "custom-vendor", "personal", 33)
+	add(sourceID, "anthropic", "company", 777)
 	add("claude_code", "anthropic", "personal", 888)
 	add("claude_code", "anthropic", "claude-personal", 44)
-	add("codex", "opencode", "personal", 999)
+	add("codex", sourceID, "personal", 999)
 
 	project := func() map[string]core.UsageSnapshot {
 		t.Helper()
 		snaps := map[string]core.UsageSnapshot{
-			"personal": core.NewUsageSnapshot("opencode", "personal"),
-			"company":  core.NewUsageSnapshot("opencode", "company"),
-			"empty":    core.NewUsageSnapshot("opencode", "empty"),
+			"personal": core.NewUsageSnapshot(sourceID, "personal"),
+			"company":  core.NewUsageSnapshot(sourceID, "company"),
+			"empty":    core.NewUsageSnapshot(sourceID, "empty"),
 			"claude":   core.NewUsageSnapshot("claude_code", "claude-personal"),
 		}
 		personal := snaps["personal"]
 		personal.Metrics["rolling_usage"] = core.Metric{Used: core.Float64Ptr(12), Unit: "percent"}
 		snaps["personal"] = personal
 		// Existing native Claude routing remains valid; no global link rewrite
-		// is needed to expose the same model vendor in an OpenCode account.
+		// is needed to expose the same model vendor in a local source account.
 		out, err := ApplyCanonicalTelemetryViewWithOptions(ctx, path, snaps, ReadModelOptions{
 			ProviderLinks: map[string]string{"anthropic": "claude_code"}, TimeWindow: core.TimeWindowAll,
 		})
@@ -80,7 +88,7 @@ func TestOpenCodeAccountProjectionPreservesVendorAndSourceBoundaries(t *testing.
 		t.Fatal("usage projection changed the root quota")
 	}
 	// Empty explicit accounts must never use source-wide fallback, even if
-	// they are the only configured OpenCode account.
+	// they are the only configured local source account.
 	if value := out["empty"].Metrics["window_requests"].Used; value != nil && *value != 0 {
 		t.Fatal("empty account inherited another profile")
 	}
@@ -96,12 +104,12 @@ func TestOpenCodeAccountProjectionPreservesVendorAndSourceBoundaries(t *testing.
 	// The existing Claude provider policy is unchanged, including its vendor
 	// filter. This assertion guards against a global provider-link remap.
 	assertInput(out["claude"], 44)
-	add("opencode", "new-vendor", "personal", 7)
+	add(sourceID, "new-vendor", "personal", 7)
 	out = project() // incremental cached path, including a previously unseen vendor
 	assertInput(out["personal"], 73)
 	assertInput(out["company"], 777)
 	for _, namespace := range []usageViewCacheNamespace{"", usageViewCacheNamespace(path)} {
-		agg, err := loadUsageViewForFilter(ctx, store.DB(), namespace, usageFilter{SourceSystem: "opencode", AccountID: "personal"})
+		agg, err := loadUsageViewForFilter(ctx, store.DB(), namespace, usageFilter{SourceSystem: sourceID, AccountID: "personal"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -110,7 +118,7 @@ func TestOpenCodeAccountProjectionPreservesVendorAndSourceBoundaries(t *testing.
 		}
 	}
 	empty, err := ApplyCanonicalTelemetryViewWithOptions(ctx, path,
-		map[string]core.UsageSnapshot{"empty": core.NewUsageSnapshot("opencode", "empty")}, ReadModelOptions{TimeWindow: core.TimeWindowAll})
+		map[string]core.UsageSnapshot{"empty": core.NewUsageSnapshot(sourceID, "empty")}, ReadModelOptions{TimeWindow: core.TimeWindowAll})
 	if err != nil {
 		t.Fatal(err)
 	}

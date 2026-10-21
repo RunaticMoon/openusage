@@ -173,6 +173,12 @@
       "api_key_env": "ALIBABA_CLOUD_API_KEY"
     },
     {
+      "id": "dsh-personal",
+      "provider": "dsh",
+      "auth": "local",
+      "provider_paths": {"sessions_dir": "~/.dsh/sessions"}
+    },
+    {
       "id": "command_code",
       "provider": "command_code",
       "api_key_env": "COMMAND_CODE_API_KEY"

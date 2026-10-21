@@ -45,7 +45,7 @@ func queryModelAgg(ctx context.Context, db *sql.DB, filter usageFilter) ([]telem
 				COALESCE(cache_write_tokens, 0))) AS total_tokens,
 			SUM(COALESCE(input_tokens, 0) +
 				COALESCE(output_tokens, 0) +
-				COALESCE(reasoning_tokens, 0) +
+				CASE WHEN LOWER(TRIM(source_system)) = 'dsh' THEN 0 ELSE COALESCE(reasoning_tokens, 0) END +
 				COALESCE(cache_write_tokens, 0)) AS billable_tokens,
 			SUM(COALESCE(cost_usd, 0)) AS cost_usd,
 			SUM(COALESCE(requests, 1)) AS requests,

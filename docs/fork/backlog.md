@@ -2,7 +2,11 @@
 
 This inventory is based on the v0.26.1 source tree. Registered support is not a
 claim that a specific host has authenticated or collected usage successfully.
-No extra provider adapters are implemented by the maintenance work.
+The original maintenance baseline added no extra provider adapters. A subsequent
+user-authorized follow-up implements [`dsh` local usage](dsh-local-usage.md) for
+DeepSeek Harness v4 logs; it is separate from the baseline `deepseek` API balance
+provider and Factory `droid`. This source addition does not establish deployment
+or successful collection on a particular host.
 
 ## Named follow-up products
 

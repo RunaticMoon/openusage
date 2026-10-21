@@ -183,10 +183,10 @@ func loadUsageViewCached(
 		return nil, maxRowID, count, false, nil
 	}
 	if entry.state != nil {
-		// Mutable OpenCode v2 rows keep the same rowid and count when their
+		// Authoritative source revisions keep the same rowid and count when their
 		// final usage arrives. Let the existing incremental reader consume the
 		// explicit revision signal instead of returning a stale fingerprint hit.
-		pending, err := hasPendingOpenCodeV2Revision(ctx, db, filter, entry.state.changeSeq)
+		pending, err := hasPendingAuthoritativeRevision(ctx, db, filter, entry.state.changeSeq)
 		if err != nil || pending {
 			return nil, maxRowID, count, false, err
 		}
