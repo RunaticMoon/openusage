@@ -1,0 +1,95 @@
+name: Fork CI
+
+on:
+  pull_request:
+    branches: [custom]
+  push:
+    branches: [custom]
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Full commit SHA to verify (empty means selected ref)
+        type: string
+        default: ''
+  workflow_call:
+    inputs:
+      candidate_sha:
+        required: true
+        type: string
+      version:
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    name: Native ${{ matrix.platform }}
+    permissions:
+      contents: read
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04-arm
+            platform: linux_arm64
+          - runner: macos-15
+            platform: darwin_arm64
+    env:
+      CGO_ENABLED: '1'
+      GOMAXPROCS: '2'
+      EXPECTED_SHA: ${{ inputs.candidate_sha || github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.EXPECTED_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify immutable checkout
+        shell: bash
+        run: |
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          printf 'Verified source SHA: `%s`\n' "$EXPECTED_SHA" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - name: Native toolchain
+        shell: bash
+        env:
+          EXPECTED_PLATFORM: ${{ matrix.platform }}
+        run: |
+          test "$(go env GOOS)_$(go env GOARCH)" = "$EXPECTED_PLATFORM"
+          go version
+          cc --version
+          if [ "$(uname -s)" = Darwin ]; then xcrun --show-sdk-version; fi
+      - name: Format, static checks, module integrity and automation regressions
+        shell: bash
+        run: |
+          test -z "$(gofmt -l .)"
+          go mod verify
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+          go vet -p 1 ./...
+          python3 -m unittest discover -s scripts/fork -p 'test_*.py' -v
+      - name: Existing and regression tests with race detector
+        run: go test -p 1 -race -count=1 ./...
+      - name: Native build, execution, linkage and checksums
+        shell: bash
+        env:
+          FORK_VERSION: ${{ inputs.version }}
+        run: bash scripts/fork/build.sh
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: openusage-${{ matrix.platform }}-${{ env.EXPECTED_SHA }}
+          path: dist/fork/${{ matrix.platform }}/
+          if-no-files-found: error
+          retention-days: 14
