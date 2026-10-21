@@ -83,12 +83,17 @@ type action struct {
 	route                 route
 	usage                 *usage
 	outcome               string
+	performance           *core.PerformanceRequest
 }
 
 // parseLog follows the tagged dsh v0.2.1-rc.2 accounting projection. Only the
 // allowlisted accounting fields survive decoding. Surface replacements and
 // compaction never erase previously observed assistant usage.
 func parseLog(ctx context.Context, data []byte, account string) (string, []shared.TelemetryEvent, error) {
+	return parseLogWithPerformance(ctx, data, account, false)
+}
+
+func parseLogWithPerformance(ctx context.Context, data []byte, account string, enabled bool) (string, []shared.TelemetryEvent, error) {
 	scanner := logScanner(data)
 	if !scanner.Scan() {
 		return "", nil, errParse
@@ -111,6 +116,10 @@ func parseLog(ctx context.Context, data []byte, account string) (string, []share
 		return "", nil, errParse
 	}
 	var actions []action
+	var timing *performanceState
+	if enabled {
+		timing = &performanceState{}
+	}
 	cut, expected := int64(-1), int64(0)
 	for scanner.Scan() {
 		if err := ctx.Err(); err != nil {
@@ -129,6 +138,9 @@ func parseLog(ctx context.Context, data []byte, account string) (string, []share
 		if expected > 500000 {
 			return "", nil, errParse
 		}
+		// Observe all lifecycle settlements, including ones without usage. They
+		// still consume a request header and must not donate it to a later call.
+		perf := timing.observe(row.Type, *row.Time, row.Data)
 		switch row.Type {
 		case "request/context", "session/end-seed", "llm/retry-started", "assistant/message", "assistant/attempt", "compaction/summary":
 		default:
@@ -144,7 +156,7 @@ func parseLog(ctx context.Context, data []byte, account string) (string, []share
 			}
 			continue
 		}
-		a := action{typeName: row.Type, seq: *row.Seq, time: *row.Time, route: route{fields.Provider, fields.Model}, outcome: "reported"}
+		a := action{typeName: row.Type, seq: *row.Seq, time: *row.Time, route: route{fields.Provider, fields.Model}, outcome: "reported", performance: perf}
 		if row.Type == "request/context" {
 			if !validRoute(a.route) {
 				return "", nil, errParse
@@ -248,8 +260,20 @@ func parseLog(ctx context.Context, data []byte, account string) (string, []share
 		}
 		if last >= 0 && a.turn == lastTurn && a.step == lastStep {
 			event.MessageID, event.OccurredAt = out[last].MessageID, out[last].OccurredAt
+			bindPerformance(&event, a)
+			if event.Performance != nil {
+				// The accounting projection replaces this slot, but it does not
+				// prove that both settlements describe the same request interval.
+				// Explicitly revoke an old inference so warm and cold stores agree.
+				event.Performance.StartedAt, event.Performance.EndedAt = nil, nil
+				event.Performance.TimingBasis = core.TimingInferredLogBoundary
+				event.Performance.TimingStatus = core.TimingAmbiguous
+				event.Performance.ExclusionReason = "settlement_replacement_ambiguous"
+				event.Performance.Evidence = []string{"native_usage_settlement", "accounting_slot_replaced"}
+			}
 			out[last] = event
 		} else {
+			bindPerformance(&event, a)
 			out = append(out, event)
 			last = len(out) - 1
 		}

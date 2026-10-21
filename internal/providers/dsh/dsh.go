@@ -57,7 +57,7 @@ func (p *Provider) ParseHookPayload([]byte, shared.TelemetryCollectOptions) ([]s
 func (p *Provider) Collect(ctx context.Context, opts shared.TelemetryCollectOptions) ([]shared.TelemetryEvent, error) {
 	root := shared.ExpandHome(opts.Path("sessions_dir", DefaultSessionsDir()))
 	account := opts.Path("account_id", ID)
-	events, err := collect(ctx, root, account)
+	events, err := collectWithPerformance(ctx, root, account, opts.PerformanceEnabled)
 	if os.IsNotExist(err) && opts.Path("account_id", "") == "" && root == DefaultSessionsDir() {
 		return nil, nil
 	}
