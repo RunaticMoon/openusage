@@ -88,14 +88,43 @@ writing. Diagnostics use fixed codes without source paths or error bodies.
 Limits are 10,000 candidate files, 32 MiB encoded input per file, 128 MiB decoded
 data per compressed file, 16 MiB per line, 500,000 events per file, and 250,000
 emitted accounting records per collection. Symlink entries are not followed.
-This implementation provides usage counters only: no account balance, quota,
-price estimation, tok/s, or new permanent Hub history. Existing OpenUsage local
+This implementation provides usage counters and optional response-speed
+metadata, not account balance, quota, price estimation, or new permanent Hub history. Existing OpenUsage local
 retention and latest-snapshot Hub behavior remain in effect.
+
+## Optional response speed
+
+With the existing performance opt-in, the same parser can enrich a request with
+`outputTokens * 1000 / elapsed_ms`. The numerator already includes reasoning;
+it is not augmented with reasoning, input, cached or total tokens. This is an
+inferred response interval including time before the first output, not decode
+speed or a first-token-latency measurement.
+
+The reviewed DSH loop writes `request/header` before dispatch, conditionally
+when an envelope or request series starts/changes. Within its active step, one
+such header can pair only with the next assistant settlement's explicit final
+`finish` timestamp. Headerless later requests stay unmeasured. Stream `time0`
+and `dt` encode chunk timestamps; their first chunk is never used as the request
+start. The [source contracts and exclusions](../PERFORMANCE_PROVIDERS.md)
+describe terminal outcomes, timestamp validation and the inferred interval guard.
+
+The parser consumes headers even when the settled request has no token usage,
+and clears timing at retry, step, restore and inherited-history boundaries.
+Accounting replacements retain their original IDs and corrected counters while
+revoking an ambiguous old timing association. Compaction usage has no verified
+request timer. Enabling the option rescans retained logs, so eligible old calls
+can be backfilled; replay and restart reuse existing canonical/performance IDs.
+The normal local store and authenticated exporter/Hub pipeline carry this
+metadata without a new API, migration, model request or separate source scan.
+Disabling performance keeps existing usage behavior and does not delete stored
+history. Follow the existing [performance operations](performance-operations.md)
+for activation, retention and rollback.
 
 ## Validation
 
 ```sh
 go test -race ./internal/providers/dsh ./internal/telemetry ./internal/detect
+go test -race ./internal/daemon -run TestDSHPerformance
 go test -race -tags fork_integration ./internal/daemon -run TestDSH
 ```
 
@@ -104,3 +133,6 @@ accounts sharing a synthetic session ID, and the existing authenticated Hub
 snapshot endpoint. Fixtures are synthetic and perform no model requests. Provider
 tests cover generations, checksum/torn inputs, fork boundaries, replacement and
 retry slots, reported zero versus absent usage, route attribution, and privacy.
+An optional `OPENUSAGE_PERFORMANCE_REAL_DSH_ROOT` test reads an explicitly
+approved source root and compares every accounting event with performance off
+and on. It writes no source data and reports only aggregate numeric evidence.

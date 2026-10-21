@@ -171,6 +171,10 @@ func readLog(path string) ([]byte, error) {
 }
 
 func collect(ctx context.Context, root, account string) ([]shared.TelemetryEvent, error) {
+	return collectWithPerformance(ctx, root, account, false)
+}
+
+func collectWithPerformance(ctx context.Context, root, account string, enabled bool) ([]shared.TelemetryEvent, error) {
 	files, err := sessionFiles(ctx, root)
 	if err != nil {
 		return nil, err
@@ -186,7 +190,7 @@ func collect(ctx context.Context, root, account string) ([]shared.TelemetryEvent
 		if err != nil {
 			return nil, err
 		}
-		id, events, err := parseLog(ctx, data, account)
+		id, events, err := parseLogWithPerformance(ctx, data, account, enabled)
 		if err != nil {
 			return nil, err
 		}
@@ -194,7 +198,11 @@ func collect(ctx context.Context, root, account string) ([]shared.TelemetryEvent
 			return nil, errParse
 		}
 		seen[id] = true
-		for _, event := range events {
+		for i := range events {
+			event := &events[i]
+			if event.Performance != nil {
+				event.Performance.SourcePath = file.path
+			}
 			if reportedTotal > maxSafeInteger-*event.TotalTokens {
 				return nil, errParse
 			}

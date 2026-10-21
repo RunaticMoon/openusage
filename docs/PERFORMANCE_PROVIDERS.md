@@ -14,16 +14,16 @@ include first-token latency and is not pure generation/decode speed.
 | Codex 0.163.0 native JSONL + native `logs_2.sqlite` | Exact `token_usage_record.response_id` → completed log tag; **only** `usage.output_tokens` | Unique sampling-start log in the same process/thread/turn → exact completed-response tag | **Inferred interval metadata only; successful-response speed unsupported** with the reviewed retained fields. Internal Completed also covers interrupted responses, so outcome stays unknown. Version, scope, retry and lifecycle guards still apply. The `token_count` accounting stream is unchanged. See the [native timing design](CODEX_NATIVE_TIMING_DESIGN.md). |
 | OpenCode v2.0.32 (macOS), v2.1.1 schema (Linux) | `session_message.id`, `tokens.output` | Native assistant `time.created` → `time.completed`, integer milliseconds | Supported direct provider request timestamps. A native successful finish is required. `tokens.reasoning` is separate and is never added to output. |
 | OpenCode v1 / legacy JSONL and hooks | Existing usage identity | No additional verified request-clock adapter in this change | Existing usage remains available; no fabricated performance. A v2 SQLite observation can enrich the same request later. |
-| DSH v0.2.1-rc.2, session format 4 | Existing native usage settlement identity and counters | Existing parser has action timestamps, routing context and retry markers; no verified matching request-start/end pair | Unsupported for speed. Do not join the latest context, turn, retry or prior action timestamp as an assumed request start. |
+| DSH v0.2.1-rc.2, session format 4 | Existing account/session/settlement-slot identity; reported `usage.outputTokens` | One explicit `request/header` inside the same step → that attempt's single terminal stream `finish` timestamp | Supported **inferred log boundary** for this subset. Headers are conditional and consumed once; headerless calls remain unmeasured. Explicit successful finish, valid ordered stream timestamps and 100 ms–15 min duration are required. |
 | Antigravity CLI 1.4.3 native transcript | Completed `PLANNER_RESPONSE`/`MODEL` step and output counter | The inspected parser has `created_at`, not a verified per-step start/end or elapsed field | Unsupported for speed. `DONE` proves the accepted usage state, not a request duration. Statusline latest/cumulative usage is not a substitute. |
 | Ollama desktop / existing GIN log parser | Desktop telemetry estimates tokens from content; GIN logs have HTTP duration/status/path | GIN duration is not joined to a native output counter/request identity | Unsupported for speed. Existing HTTP latency summaries or desktop timestamps cannot be combined into request throughput. No new source inspection or instrumentation is introduced. |
 | Copilot existing JSONL parser | `assistant.usage` has output and a `duration` field; current accounting message identity includes file line | Parser calls the field `duration_ms`, but this audit did not verify the installed producer's request scope, finality, missing-vs-zero semantics or fork-stable identity | Unsupported pending producer-contract verification. Session shutdown `totalApiDurationMs` is explicitly not a request timer. |
 | Remaining providers | Existing accounting/quota only | No verified per-request clock added | Unsupported; no zero-speed placeholder and no timing inferred from quota polling. |
 
-The extra-source review above used existing fork code only. It does not assert
+The source review above does not assert
 that every upstream product lacks timing, or promise support for an uninspected
-schema/version. No DSH, Antigravity, Ollama or Copilot parser was rewritten for
-this feature. Provider-level lack of observations is not evidence of zero
+schema/version. Antigravity, Ollama and Copilot have no new timing adapter.
+Provider-level lack of observations is not evidence of zero
 traffic: the coverage denominator contains only identifiable request
 observations accepted by a performance adapter.
 
@@ -36,6 +36,7 @@ observations accepted by a performance adapter.
 | `claude.message.usage.output_tokens` | The raw output counter reported in the native message, unchanged. The inspected local log does not independently establish thinking-token inclusion for every configured billing route. It is **not a promise of visible-text-only output**; no separate thinking/reasoning field is added or subtracted. |
 | `codex.token_usage_record.usage.output_tokens` | The per-response reported output counter, unchanged. In Codex 0.163.0's OpenAI Responses mapping, reasoning is a detail within the reported output count, so it is not added again. Custom provider semantics are retained as reported rather than inferred from a model name. The retained native completion tag does not prove success; interval metadata alone cannot supply successful-response speed. |
 | `opencode.tokens.output_excludes_reasoning` | The native OpenCode v2 output bucket excludes its separate reasoning bucket. Only that output bucket is the numerator, including explicit zero when reasoning is positive. |
+| `dsh.usage.outputTokens_includes_reasoning` | The native DSH output counter includes its optional reasoning detail. That detail is never added again. |
 
 The pinned [Codex Responses conversion](https://github.com/openai/codex/blob/83086188ae0614bd882818ff1aa23f3194962012/codex-rs/codex-api/src/sse/responses.rs#L123)
 copies the wire output count directly and copies the reasoning breakdown into a
@@ -88,6 +89,18 @@ unchanged. Input, cache, total tokens, work and cost are never numerators.
 - Error/aborted outcomes and partial responses do not enter successful measured
   statistics. A native timestamp alone does not prove a successful outcome.
   Unknown outcomes stay unknown even when accounting has settled.
+- DSH uses only an explicit request header in an active matching step. Neither
+  `step/start`, routing context, retry time nor first streamed chunk is a start
+  substitute. A header is consumed by the next settlement even if it has no
+  usage. Restore, inherited-prefix, retry and step boundaries discard it. Its
+  millisecond timestamps use the same 2000–2100 validity range as OpenCode;
+  negative/fractional gaps, unordered streams, duplicate headers/finishes and
+  any records after finish remain unmeasured. `assistant/attempt` and interrupted
+  messages are failed; only explicit `stop`, `tool-calls` or `max-tokens` on an
+  uninterrupted message establishes success. Compaction has no verified timer.
+  A same-slot accounting replacement explicitly revokes the earlier inferred
+  association, so cold replay and a previously populated store agree. Native
+  usage identity, revision, counters and cost semantics remain unchanged.
 - IDs use a native request namespace plus configured source/account. Output,
   timestamps, duration, file offsets and collection time are not request IDs.
   Replays and copied native identities merge; separate retry IDs remain distinct.
@@ -129,8 +142,11 @@ include the option state; rotation/truncation cannot reuse an unrelated start.
   [opencode-sqlite.md](fork/opencode-sqlite.md).
 - DSH reference commit
   [`687f282e8625c6b8d11ff58211a90524be2e4317`](https://github.com/deepseek-ai/deepseek-harness/tree/687f282e8625c6b8d11ff58211a90524be2e4317)
-  supports the existing accounting projection, not a newly inferred timer; see
-  [dsh-local-usage.md](fork/dsh-local-usage.md).
+  supplies the accounting projection and the reviewed
+  [pre-dispatch header](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/packages/core/agent-loop/src/agent.ts#L587)
+  and [timed stream settlement](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/packages/core/agent-loop/src/assistant-stream.ts#L54)
+  contracts. These are local log boundaries, not provider network clocks; see
+  [dsh-local-usage.md](fork/dsh-local-usage.md#optional-response-speed).
 - Antigravity [headless output](https://antigravity.google/docs/cli/headless/)
   distinguishes step usage from cumulative results. The observed native 1.4.3
   transcript format is not promoted to a published duration contract here.
@@ -149,6 +165,8 @@ include the option state; rotation/truncation cannot reuse an unrelated start.
 | Codex native DB timing, profile isolation, late evidence, correction, retention and privacy | [Native timing regression map](CODEX_NATIVE_TIMING_DESIGN.md#evidence-and-validation-boundary) |
 | Codex delayed native completion → existing store → Exporter → Hub | `daemon.TestCodexNativePerformanceLateCompletionToHub` |
 | Explicit personal Codex JSONL/native DB → isolated store/Hub, accounting and metrics unchanged | opt-in `daemon.TestPerformanceRealCodexReadOnlyToHub` |
+| DSH explicit header/finish, output-only arithmetic, missing/failed/malformed clocks, retry/seed/replacement, opt-in replay and unchanged usage | `dsh.TestPerformance*` |
+| Approved retained DSH logs → enabled/disabled parser accounting comparison and numeric timing aggregates | opt-in `dsh.TestPerformanceRealDSHReadOnly` |
 | Legacy hook plus native log, ten replays, unchanged canonical tokens/cost, 200 outputs / 3000 ms = 66.667, Exporter → authenticated original Hub | `daemon.TestPerformanceNativeSourceAccountingExporterHub` |
 | Confirmed personal log → isolated SQLite → canonical snapshot → Exporter → isolated Hub, actual off/on accounting comparison | opt-in `daemon.TestPerformanceRealClaudeReadOnlyToHub` |
 

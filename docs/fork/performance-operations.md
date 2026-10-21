@@ -161,8 +161,9 @@ not attach performance because request project attribution is not stored.
 | Snapshot diagnostic `performance_status=unavailable` | The optional query failed. Check local store diagnostics; do not replace the DB or present missing rates as zero. |
 | Zero candidates or no recent source heartbeat | No identifiable request observations in the selected scope/period, or no successful observed scan. This is not proof of idle traffic or a universally supported source. |
 | Candidates but unmeasured/unknown reasons | Inspect JSON coverage and request timing/outcome. Codex records without a verified request clock remain unmeasured; completed accounting alone does not prove success. |
-| Direct OpenCode or inferred Claude measurements | The accepted native contract supplied output, success and timing evidence. Confirm account, source, model, period and coverage before comparison. |
-| DSH, Antigravity, Ollama, Copilot or another unadapted source | Existing accounting may work while response speed is unsupported. Do not synthesize a duration from task/user/tool boundaries or quota refreshes. |
+| Direct OpenCode or inferred Claude/DSH measurements | The accepted native contract supplied output, success and timing evidence. Confirm account, source, model, period and coverage before comparison. DSH requires a one-use pre-dispatch request header and an explicit terminal finish. |
+| DSH calls without a request header, or with replaced/failed/ambiguous settlements | Token accounting remains available. Conditional headers do not cover every request; missing timing is not zero speed. |
+| Antigravity, Ollama, Copilot or another unadapted source | Existing accounting may work while response speed is unsupported. Do not synthesize a duration from task/user/tool boundaries or quota refreshes. |
 | Partial recent window | Observed allocation can be displayed with the partial-coverage label. It is not complete host throughput. |
 | Stale/unknown/clock-ahead source | Historical measurements remain historical; the TUI suppresses the current wall rate. Compare source heartbeat and collection health. |
 
