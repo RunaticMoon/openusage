@@ -4,49 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
 )
-
-func TestPruneCorruptBackupsKeepsNewest(t *testing.T) {
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "telemetry.db")
-
-	// Three corrupt snapshots with increasing modtimes, plus a -wal sidecar
-	// for the newest that should survive alongside it.
-	mk := func(name string, age time.Duration) string {
-		p := filepath.Join(dir, name)
-		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		mt := time.Now().Add(-age)
-		if err := os.Chtimes(p, mt, mt); err != nil {
-			t.Fatal(err)
-		}
-		return p
-	}
-	oldest := mk("telemetry.db.corrupt.20260101T000000", 72*time.Hour)
-	middle := mk("telemetry.db.corrupt.bak", 48*time.Hour)
-	newest := mk("telemetry.db.corrupt.20260601T000000", 1*time.Hour)
-	// An unrelated file must be left untouched.
-	keepMe := mk("telemetry.db", 0)
-
-	pruneCorruptBackups(dbPath, 1)
-
-	if _, err := os.Stat(newest); err != nil {
-		t.Errorf("newest corrupt backup should be kept: %v", err)
-	}
-	if _, err := os.Stat(keepMe); err != nil {
-		t.Errorf("live db file must not be touched: %v", err)
-	}
-	for _, gone := range []string{oldest, middle} {
-		if _, err := os.Stat(gone); !os.IsNotExist(err) {
-			t.Errorf("expected %s to be removed, err=%v", filepath.Base(gone), err)
-		}
-	}
-}
 
 func TestPruneOldEventsBatchedRemovesBacklog(t *testing.T) {
 	db, err := sql.Open("sqlite3", filepath.Join(t.TempDir(), "telemetry.db"))

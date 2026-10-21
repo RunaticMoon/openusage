@@ -1,8 +1,10 @@
 package telemetry
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -103,20 +105,18 @@ func TestQuickIntegrityCheck_HealthyDB(t *testing.T) {
 		t.Fatalf("create table: %v", err)
 	}
 
-	corrupt, detail := quickIntegrityCheck(db)
-	if corrupt {
-		t.Errorf("healthy DB reported as corrupt: %s", detail)
+	if err := quickIntegrityCheck(db); err != nil {
+		t.Errorf("healthy DB failed integrity check: %v", err)
 	}
 }
 
 func TestQuickIntegrityCheck_NilDB(t *testing.T) {
-	corrupt, _ := quickIntegrityCheck(nil)
-	if corrupt {
-		t.Error("nil DB should not be reported as corrupt")
+	if err := quickIntegrityCheck(nil); err == nil || errors.Is(err, errIntegrityCheckFailed) {
+		t.Errorf("nil DB should report unavailable check, not corruption: %v", err)
 	}
 }
 
-func TestOpenStore_RecoverFromCorruptDB(t *testing.T) {
+func TestOpenStore_PreservesCorruptDB(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "telemetry.db")
 
@@ -143,21 +143,43 @@ func TestOpenStore_RecoverFromCorruptDB(t *testing.T) {
 	}
 	f.Close()
 
-	// OpenStore should detect the corruption, back up, and create a fresh DB.
-	store2, err := OpenStore(dbPath)
+	before, err := os.ReadFile(dbPath)
 	if err != nil {
-		t.Fatalf("OpenStore after corruption: %v", err)
+		t.Fatal(err)
 	}
-	defer store2.Close()
-
-	// The corrupt backup should exist.
-	entries, _ := filepath.Glob(filepath.Join(dir, "telemetry.db.corrupt.*"))
-	if len(entries) == 0 {
-		t.Error("expected a .corrupt backup file to be created")
+	info, err := os.Stat(dbPath)
+	if err != nil {
+		t.Fatal(err)
 	}
+	store2, err := OpenStore(dbPath)
+	if store2 != nil {
+		store2.Close()
+		t.Fatal("damaged database was accepted")
+	}
+	if err == nil {
+		t.Fatal("expected an integrity or SQLite corruption error")
+	}
+	after, err := os.ReadFile(dbPath)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("damaged database was changed: %v", err)
+	}
+	current, err := os.Stat(dbPath)
+	if err != nil || !os.SameFile(info, current) {
+		t.Fatalf("damaged database was replaced: %v", err)
+	}
+	entries, err := filepath.Glob(dbPath + ".corrupt.*")
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("database must not be quarantined automatically: matches=%v err=%v", entries, err)
+	}
+}
 
-	// The new DB should be functional.
-	if _, err := store2.db.Exec(`SELECT COUNT(*) FROM usage_events`); err != nil {
-		t.Errorf("fresh DB should be queryable: %v", err)
+func TestQuickIntegrityCheck_UnavailableIsNotCorruption(t *testing.T) {
+	db, err := sql.Open("sqlite3", filepath.Join(t.TempDir(), "telemetry.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	if err := quickIntegrityCheck(db); err == nil || errors.Is(err, errIntegrityCheckFailed) {
+		t.Errorf("closed handle should report unavailable check, not corruption: %v", err)
 	}
 }
