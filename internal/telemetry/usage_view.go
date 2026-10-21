@@ -212,11 +212,12 @@ func applyCanonicalUsageViewWithDB(
 		if accountScope == "" {
 			accountScope = strings.TrimSpace(accountID)
 		}
-		if strings.EqualFold(providerID, "opencode") && accountScope != "" {
-			// OpenCode's provider_id is the model vendor, not the tool identity.
-			// Explicit accounts must never fall back to another profile's usage.
+		if (strings.EqualFold(providerID, "opencode") || strings.EqualFold(providerID, "antigravity")) && accountScope != "" {
+			// Local tool profiles require both source and account boundaries.
+			// An empty profile must never inherit another profile's usage,
+			// even when it is the only account configured for this provider.
 			agg, err := loadUsageViewForFilter(ctx, db, cacheNamespace, usageFilter{
-				SourceSystem: "opencode", AccountID: accountScope,
+				SourceSystem: strings.ToLower(providerID), AccountID: accountScope,
 				Since: since, TodaySince: todaySince, WindowKey: timeWindow,
 			})
 			if err != nil {

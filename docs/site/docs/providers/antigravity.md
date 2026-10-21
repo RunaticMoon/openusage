@@ -1,106 +1,92 @@
 ---
 title: Antigravity CLI
-description: Track Antigravity CLI context usage, model quotas, and session tokens in OpenUsage.
+description: Track local Antigravity CLI transcript usage and optional TUI context and quota snapshots.
 sidebar_label: Antigravity CLI
 keywords: [antigravity cli usage tracker, agy quota tracking, antigravity token usage, antigravity status line]
 ---
 
 # Antigravity CLI
 
-Tracks the local Antigravity CLI (`agy`) through its documented custom status-line JSON feed. OpenUsage does not read Antigravity credentials or call a separate usage API.
+The `antigravity` provider reads local CLI transcript usage and, when available, the latest custom status-line observation. It does not log in, switch accounts, read credentials, or make model or usage API requests.
 
-## At a glance
+## Two separate data sources
 
-- **Provider ID** — `antigravity`
-- **Detection** — `agy` on `PATH` plus `~/.gemini/antigravity-cli/settings.json` or `brain/`
-- **Auth** — local status-line feed; no API key required
-- **Type** — coding agent
-- **Dashboard color** — mauve
-- **Tracks**:
-  - model and workspace
-  - context-window percentage
-  - cumulative session input, output, and total tokens
-  - current input, output, and cache token parts
-  - per-bucket quota remaining and reset time
-  - plan tier, agent state, CLI version, and session identity
+Native transcript collection reads `brain/*/.system_generated/logs/transcript.jsonl` beneath the configured CLI profile. Completed model response steps with a stable conversation/step identity, timestamp and numeric usage supply request history. Message text, prompts, tool arguments and responses are not retained in telemetry. Re-reading an unchanged transcript must not create additional requests. History covers only steps that reported all supported counters: a completed step with no counters remains unknown and is skipped, never converted to zero usage. Partially reported or invalid counters fail collection without importing a partial batch.
 
-## Setup
+The optional status-line feed supplies the most recently observed context window, model label, session counters, current token components, quota remaining/reset times, plan tier and agent state. Its contract has a conversation ID but no request ID. State changes, repeated counts and token revisions therefore create **no usage-history or raw-envelope events**. Session totals are not attributed to whichever model happens to be active when the status line runs.
 
-### Auto-detection
+Transcript token components are normalized as input, output and cache-read traffic. A derived component sum is not an independently reported billing total; no dollar cost is inferred. Status-line current components remain separate because that contract does not establish their overlap. There is no fabricated `current_tokens` sum.
 
-OpenUsage detects Antigravity when both conditions are true:
+## Configuration and profile isolation
 
-1. `agy` is available on `PATH`.
-2. `~/.gemini/antigravity-cli/` contains `settings.json` or `brain/`.
-
-### Install the status-line bridge
-
-```bash
-openusage integrations install antigravity
-```
-
-The installer backs up `settings.json` to `settings.json.bak`, registers `openusage antigravity statusline`, and enables `stack_with_default` so Antigravity's built-in line remains visible. If a different custom `statusLine.command` already exists, installation stops rather than replacing it.
-
-Start or refresh an Antigravity session after installation. The command stores the latest payload at:
-
-```text
-${XDG_STATE_HOME:-~/.local/state}/openusage/antigravity-status.json
-```
-
-The state file is written atomically with `0600` permissions.
-
-### Manual configuration
+OpenUsage detects the default CLI installation when `agy` is on `PATH` and `~/.gemini/antigravity-cli/` contains `settings.json` or `brain/`. Configure additional profiles explicitly, with a unique account ID and native transcript root for each profile:
 
 ```json
 {
   "accounts": [
     {
-      "id": "antigravity",
+      "id": "agy-profile-one",
       "provider": "antigravity",
       "auth": "local",
-      "binary": "agy"
+      "binary": "agy",
+      "provider_paths": {
+        "transcripts_dir": "/path/to/profile-one/.gemini/antigravity-cli/brain",
+        "status_file": "/path/to/private-state/profile-one-status.json"
+      }
     }
   ]
 }
 ```
 
-For an alternate state location, add a provider path:
+The default transcript root is `~/.gemini/antigravity-cli/brain`. The default optional status file is `${XDG_STATE_HOME:-~/.local/state}/openusage/antigravity-status.json`. An explicit account never falls back to another account's transcript usage, including an empty profile configured on its own.
+
+Event identity includes an explicit account namespace. If native history was copied between profiles, choose one source for that copied history; the reader does not infer cross-profile lineage. Renaming an account changes its namespace and requires a reviewed migration to avoid importing the same history again.
+
+Distinct profile directories do not necessarily mean distinct billing accounts. Do not add their quota fractions together. Profiles that share a symlinked `.local` directory must use separate explicit status files. The collector's `provider_paths.status_file` and the status-line command's `--state-file` must name the same file for that profile.
+
+## Optional TUI status-line capture
+
+```bash
+openusage integrations install antigravity
+```
+
+The native installer backs up the selected CLI `settings.json` to `settings.json.bak`, registers the current OpenUsage binary and enables `stack_with_default`. In that profile's `~/.gemini/antigravity-cli/settings.json`, a separate state file can be configured as follows:
 
 ```json
 {
-  "provider_paths": {
-    "status_file": "~/path/to/antigravity-status.json"
+  "statusLine": {
+    "type": "command",
+    "command": "\"/path/to/openusage\" antigravity statusline --state-file \"/path/to/private-state/profile-one-status.json\"",
+    "enabled": true,
+    "stack_with_default": true
   }
 }
 ```
 
-## Status-line data
+Use literal absolute paths. Native install/upgrade preserves an existing explicit `--state-file`, including quoted paths with spaces. Commands containing shell expansion, pipelines or unrecognized options are refused for review rather than rewritten. Unrelated configuration is preserved. A different custom status-line command is not replaced.
 
-Antigravity runs the configured command whenever agent state changes, pipes a JSON document to its standard input, and renders the command's standard output below the prompt. OpenUsage accepts that same document through:
+The [official status-line contract](https://antigravity.google/docs/cli/statusline/) describes callbacks from the terminal UI when agent state changes. [Headless JSON and stream-json output](https://antigravity.google/docs/cli/headless/) are separate contracts. Installing this bridge does not demonstrate that a headless, ACP or Paseo session invokes it. Native transcript history does not depend on that callback, but TUI quota/context remains unavailable until an actual status-line payload is captured.
 
-```bash
-openusage antigravity statusline
-```
+The command reads status-line JSON from stdin and prints a compact line such as `AGY · Gemini Pro · quota 94% · context 14%`. A synthetic input test proves parsing and storage only; it is not evidence of real usage or quota collection.
 
-The bridge prints a compact line such as `AGY · Gemini Pro · quota 94% · context 14%` while saving the structured payload for the dashboard and telemetry daemon.
+## Freshness and privacy
 
-Quota windows whose reset time has already passed are hidden, because they have refilled since the snapshot was taken and their old fraction no longer describes the account. If every window in the latest snapshot has expired, the tile shows "Quota windows expired, waiting for fresh data" until Antigravity sends a new payload.
+Status capture atomically replaces a `0600` file with a typed field allowlist. Email, transcript paths, arbitrary extra fields and credential fields are omitted; workspace values become short labels. Snapshot exports also omit those fields when reading older unsanitized state files.
 
-## What is not tracked
+The snapshot timestamp is the original capture time, with file modification time as a fallback for legacy files. Polling never makes an old observation fresh or extends a relative quota reset. Expired quota windows are omitted. If all reported windows have expired, the provider waits for fresh data. Missing status-line data is an unknown local snapshot state, not evidence that authentication failed. Collector health and transcript usage must be checked separately.
 
-- **Dollar spend.** The status-line contract exposes tokens, context, and quota fractions, not a reliable public price surface.
-- **Full transcript content.** OpenUsage does not parse or store the Antigravity brain/transcript directory in this integration.
-- **Credentials.** OAuth tokens, API keys, and cookies are never extracted.
+Completed native steps are treated as settled records. Conflicting duplicates within one file fail collection, but a later rewrite of an already imported completed step has no native revision authority: existing store deduplication can retain the original positive counters. OpenUsage does not invent revision authority from file modification or polling time. Such corrections require separately reviewed reconciliation.
 
-## Troubleshooting
+Existing rows produced by an older status-line revision implementation are not automatically deleted or rewritten. Any historical correction requires a separately reviewed backup and cleanup operation.
 
-- **Provider missing:** run `which agy` and confirm `~/.gemini/antigravity-cli/` exists.
-- **No status data:** run `openusage integrations list --all`, install the integration, then start an Antigravity session.
-- **Existing status command:** back up or remove the custom `statusLine.command` yourself, then rerun the installer. OpenUsage refuses to overwrite it.
-- **Stale data:** the dashboard reflects the most recent status-line invocation. Start an active session to refresh it.
-- **Frozen tile after moving or reinstalling OpenUsage:** Antigravity disables a status-line command that keeps failing, so if the absolute OpenUsage binary path in `statusLine.command` no longer exists (for example after uninstalling a Homebrew copy), the tile stops updating. `openusage integrations list` reports the integration as `outdated` with "OpenUsage binary not found"; run `openusage integrations upgrade antigravity` to re-register the current binary.
+## Limits and troubleshooting
 
-## Related
+- **No recent usage:** check that the account points to its own native `brain` directory and that completed model-response rows contain supported numeric counters. A readable source or installed bridge alone is not successful usage collection.
+- **No quota/context:** confirm a natural TUI callback reached the matching status file. Headless history may be available while quota is still unavailable.
+- **Stale snapshot:** the timestamp reflects the last observation. The collector does not call the model to refresh it.
+- **Binary moved:** `openusage integrations list` reports an unavailable native command as outdated. `openusage integrations upgrade antigravity` updates the binary path while preserving the explicit state file.
+- **Unsupported data:** model attribution absent from a transcript remains unknown. No dollar spend, token-per-second metric, account-manager proxy history, or credential extraction is added.
+- **Local format changes:** the transcript reader supports the inspected CLI 1.4.3 schema. Unknown usage-bearing formats and partially reported counters fail closed. A trailing incomplete line waits for its newline; a changing file is retried. This is distinct from the documented status-line contract.
+- **Collection bounds:** the reader accepts at most 10,000 root entries, 64 MiB per file, 4 MiB per line, 256 MiB per collection and 100,000 events per collection. Both individual and collection-wide token totals must fit the exact JSON integer range (2^53−1). It refuses symlinked transcript components. Exceeding a bound reports a collection error without importing a partial batch.
 
-- [Gemini CLI](./gemini-cli.md) — separate OAuth/session-file provider
-- [Antigravity status-line documentation](https://antigravity.google/docs/cli/statusline/)
+[Gemini CLI](./gemini-cli.md) is a separate provider with a different local data format.

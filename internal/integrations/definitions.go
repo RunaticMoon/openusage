@@ -459,7 +459,14 @@ func patchAntigravityConfig(configData []byte, targetFile string, install bool) 
 			statusLine = map[string]any{}
 		}
 		statusLine["type"] = "command"
-		statusLine["command"] = antigravityStatuslineCommand(targetFile)
+		command := antigravityStatuslineCommand(targetFile)
+		if existingCommand != "" {
+			_, stateFile, _ := parseAntigravityCommand(existingCommand)
+			if stateFile != "" {
+				command += " --state-file " + quoteAntigravityArgument(stateFile)
+			}
+		}
+		statusLine["command"] = command
 		statusLine["enabled"] = true
 		statusLine["stack_with_default"] = true
 		cfg["statusLine"] = statusLine
@@ -483,39 +490,21 @@ func antigravityStatuslineCommand(targetFile string) string {
 	if targetFile == "" {
 		targetFile = "openusage"
 	}
-	return fmt.Sprintf("\"%s\" antigravity statusline", escapeForShellString(targetFile))
+	return quoteAntigravityArgument(targetFile) + " antigravity statusline"
 }
 
-// antigravityCommandBinary returns the executable of a status-line command:
-// the leading double-quoted word with sh escapes removed (the form
-// antigravityStatuslineCommand writes), or the first bare word.
+// antigravityCommandBinary uses the same literal grammar as installation.
 func antigravityCommandBinary(command string) string {
-	command = strings.TrimSpace(command)
-	if !strings.HasPrefix(command, `"`) {
-		if fields := strings.Fields(command); len(fields) > 0 {
-			return fields[0]
-		}
+	binary, _, ok := parseAntigravityCommand(command)
+	if !ok {
 		return ""
 	}
-	var b strings.Builder
-	for i := 1; i < len(command); i++ {
-		c := command[i]
-		switch {
-		case c == '"':
-			return b.String()
-		case c == '\\' && i+1 < len(command) && strings.IndexByte("\\\"$`", command[i+1]) >= 0:
-			i++
-			b.WriteByte(command[i])
-		default:
-			b.WriteByte(c)
-		}
-	}
-	return "" // unterminated quote
+	return binary
 }
 
 func isAntigravityOpenUsageCommand(command string) bool {
-	command = strings.ToLower(strings.TrimSpace(command))
-	return strings.Contains(command, "antigravity statusline")
+	_, _, ok := parseAntigravityCommand(command)
+	return ok
 }
 
 // --- Detectors ---

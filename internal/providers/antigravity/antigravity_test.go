@@ -2,7 +2,6 @@ package antigravity
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -58,14 +57,17 @@ func TestCaptureStatusLineAndFetch(t *testing.T) {
 	if got := metricUsed(t, snap, "total_tokens"); got != 1500 {
 		t.Fatalf("total tokens = %v, want 1500", got)
 	}
-	if got := metricUsed(t, snap, "current_tokens"); got != 147 {
-		t.Fatalf("current tokens = %v, want 147", got)
+	if _, ok := snap.Metrics["current_tokens"]; ok {
+		t.Fatal("ambiguous current token parts must not be summed")
 	}
-	if got := snap.Attributes["workspace"]; got != "/tmp/antigravity-project" {
-		t.Fatalf("workspace = %q, want project path", got)
+	if got := metricUsed(t, snap, "current_input_tokens"); got != 100 {
+		t.Fatalf("current input = %v, want 100", got)
 	}
-	if len(snap.ModelUsage) != 1 || snap.ModelUsage[0].RawModelID != "Gemini Pro" {
-		t.Fatalf("model usage = %+v, want one Gemini Pro row", snap.ModelUsage)
+	if got := snap.Attributes["workspace"]; got != "antigravity-project" {
+		t.Fatalf("workspace = %q, want project label", got)
+	}
+	if len(snap.ModelUsage) != 0 {
+		t.Fatalf("session totals must not be attributed to the active model: %+v", snap.ModelUsage)
 	}
 	if snap.Resets["quota_pro_reset"].IsZero() || snap.Resets["quota_reset"].IsZero() {
 		t.Fatal("expected quota reset timestamps")
@@ -84,15 +86,15 @@ func TestFetchMissingStatusLineIsNonFatal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Fetch() error = %v", err)
 	}
-	if snap.Status != core.StatusAuth {
-		t.Fatalf("status = %q, want %q", snap.Status, core.StatusAuth)
+	if snap.Status != core.StatusUnknown {
+		t.Fatalf("status = %q, want %q", snap.Status, core.StatusUnknown)
 	}
 	if !strings.Contains(snap.Message, "No Antigravity") {
 		t.Fatalf("message = %q, want setup guidance", snap.Message)
 	}
 }
 
-func TestFetchCanceledContextKeepsStatusFileDiagnostic(t *testing.T) {
+func TestFetchCanceledContextDoesNotExposeStatusFile(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	path := filepath.Join(t.TempDir(), "antigravity-status.json")
@@ -107,50 +109,8 @@ func TestFetchCanceledContextKeepsStatusFileDiagnostic(t *testing.T) {
 	if err == nil {
 		t.Fatal("Fetch() error = nil, want canceled context error")
 	}
-	if got := snap.Raw["status_file"]; got != path {
-		t.Fatalf("status_file diagnostic = %q, want %q", got, path)
-	}
-}
-
-func TestTelemetryRevisionAndCurrentUsage(t *testing.T) {
-	p := New()
-	events, err := p.ParseHookPayload([]byte(sampleStatusLineJSON), shared.TelemetryCollectOptions{})
-	if err != nil {
-		t.Fatalf("ParseHookPayload() error = %v", err)
-	}
-	if len(events) != 1 {
-		t.Fatalf("ParseHookPayload() returned %d events, want 1", len(events))
-	}
-	event := events[0]
-	if event.EventType != shared.TelemetryEventTypeMessageUsage {
-		t.Fatalf("event type = %q, want message usage", event.EventType)
-	}
-	if event.InputTokens == nil || *event.InputTokens != 100 {
-		t.Fatalf("input tokens = %v, want 100", event.InputTokens)
-	}
-	if event.TotalTokens == nil || *event.TotalTokens != 147 {
-		t.Fatalf("total tokens = %v, want 147", event.TotalTokens)
-	}
-	if event.TurnID == "" || !strings.Contains(event.TurnID, ":status:") {
-		t.Fatalf("turn ID = %q, want stable status revision", event.TurnID)
-	}
-
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(sampleStatusLineJSON), &payload); err != nil {
-		t.Fatalf("unmarshal sample: %v", err)
-	}
-	contextWindow := payload["context_window"].(map[string]any)
-	contextWindow["total_output_tokens"] = float64(301)
-	changed, err := json.Marshal(payload)
-	if err != nil {
-		t.Fatalf("marshal changed payload: %v", err)
-	}
-	changedEvents, err := p.ParseHookPayload(changed, shared.TelemetryCollectOptions{})
-	if err != nil {
-		t.Fatalf("ParseHookPayload(changed) error = %v", err)
-	}
-	if changedEvents[0].TurnID == event.TurnID {
-		t.Fatal("changed cumulative usage reused the same revision")
+	if _, ok := snap.Raw["status_file"]; ok {
+		t.Fatal("private status file path exposed")
 	}
 }
 

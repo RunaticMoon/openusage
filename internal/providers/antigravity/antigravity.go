@@ -1,10 +1,11 @@
-// Package antigravity adapts the Antigravity CLI status-line feed to the
-// OpenUsage provider and telemetry contracts.
+// Package antigravity adapts native CLI transcript usage and optional TUI
+// status-line observations to the OpenUsage provider and telemetry contracts.
 package antigravity
 
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/janekbaraniewski/openusage/internal/core"
 	"github.com/janekbaraniewski/openusage/internal/providers/providerbase"
+	"github.com/janekbaraniewski/openusage/internal/providers/shared"
 	"github.com/janekbaraniewski/openusage/internal/telemetry"
 )
 
@@ -37,7 +39,7 @@ func New() *Provider {
 			ID: providerID,
 			Info: core.ProviderInfo{
 				Name:         "Antigravity CLI",
-				Capabilities: []string{"local_config", "statusline", "token_usage", "quota", "by_model", "by_workspace"},
+				Capabilities: []string{"local_config", "statusline", "token_usage", "quota", "native_transcripts"},
 				DocURL:       "https://antigravity.google/docs/cli/statusline/",
 			},
 			Auth: core.ProviderAuthSpec{
@@ -48,7 +50,8 @@ func New() *Provider {
 				DocsURL: "https://antigravity.google/docs/cli/statusline/",
 				Quickstart: []string{
 					"Install and run the Antigravity CLI so ~/.gemini/antigravity-cli exists.",
-					"Run `openusage integrations install antigravity` to connect the status line.",
+					"Use provider_paths.transcripts_dir for an alternate profile's native brain directory.",
+					"Optionally run `openusage integrations install antigravity` to connect TUI quota/context snapshots.",
 				},
 			},
 			Dashboard: dashboardWidget(),
@@ -78,38 +81,48 @@ func DefaultStatusFilePath() string {
 }
 
 func statusFilePath(acct core.AccountConfig) string {
-	return strings.TrimSpace(acct.Path("status_file", DefaultStatusFilePath()))
+	return shared.ExpandHome(acct.Path("status_file", DefaultStatusFilePath()))
 }
 
 // Fetch projects the latest captured status-line document into a snapshot.
 func (p *Provider) Fetch(ctx context.Context, acct core.AccountConfig) (core.UsageSnapshot, error) {
 	snap := core.NewUsageSnapshot(p.ID(), acct.ID)
 	path := statusFilePath(acct)
-	if path != "" {
-		snap.Raw["status_file"] = path
+	snap.SetDiagnostic("statusline_history", "unsupported: status-line observations have no stable request identity")
+	snap.SetDiagnostic("native_history_coverage", "Only completed records reporting counters; older records without counters omitted")
+	if strings.TrimSpace(acct.Path("transcripts_dir", "")) != "" {
+		snap.SetDiagnostic("native_transcripts", "configured; check source collector health for collection results")
 	}
 
 	if err := ctx.Err(); err != nil {
 		return snap, err
 	}
 	if path == "" {
-		snap.Status = core.StatusAuth
+		snap.Status = core.StatusUnknown
 		snap.Message = "Antigravity status-line path is unavailable"
 		return snap, nil
 	}
 
-	data, err := os.ReadFile(path)
+	file, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			snap.Status = core.StatusAuth
-			snap.Message = "No Antigravity status-line data yet"
-			snap.SetDiagnostic("setup", "Run `openusage integrations install antigravity`, then start agy")
+			snap.Status = core.StatusUnknown
+			snap.Message = "No Antigravity status-line data yet; transcript history is collected separately"
+			snap.SetDiagnostic("setup", "TUI quota/context unavailable; native transcript history does not require a status-line callback")
 			return snap, nil
 		}
 		return snap, fmt.Errorf("antigravity: read status file: %w", err)
 	}
-
-	payload, err := parseStatusLinePayload(data)
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return snap, fmt.Errorf("antigravity: stat status file: %w", err)
+	}
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return snap, fmt.Errorf("antigravity: read status file: %w", err)
+	}
+	payload, err := parseStatusLinePayloadAt(data, info.ModTime())
 	if err != nil {
 		snap.Status = core.StatusError
 		snap.Message = "Antigravity status-line data is malformed"
@@ -156,7 +169,7 @@ func projectSnapshot(snap *core.UsageSnapshot, payload statusLinePayload) {
 	if modelName != "" {
 		snap.SetAttribute("model", modelName)
 	}
-	if workspace := statusWorkspace(payload); workspace != "" {
+	if workspace := shared.SanitizeWorkspace(statusWorkspace(payload)); workspace != "" {
 		snap.SetAttribute("workspace", workspace)
 	}
 	if payload.SessionID != "" {
@@ -174,9 +187,6 @@ func projectSnapshot(snap *core.UsageSnapshot, payload statusLinePayload) {
 	if payload.PlanTier != "" {
 		snap.SetAttribute("plan_tier", payload.PlanTier)
 	}
-	if payload.Email != "" {
-		snap.SetAttribute("account_email", payload.Email)
-	}
 	if payload.AgentState != "" {
 		snap.Raw["agent_state"] = payload.AgentState
 	}
@@ -189,18 +199,6 @@ func projectSnapshot(snap *core.UsageSnapshot, payload statusLinePayload) {
 			Used:   core.Float64Ptr(float64(total)),
 			Unit:   "tokens",
 			Window: defaultUsageWindow,
-		}
-		if modelName != "" {
-			record := core.ModelUsageRecord{
-				RawModelID:   modelName,
-				RawSource:    "statusline",
-				Window:       defaultUsageWindow,
-				InputTokens:  core.Float64Ptr(float64(payload.ContextWindow.TotalInputTokens)),
-				OutputTokens: core.Float64Ptr(float64(payload.ContextWindow.TotalOutputTokens)),
-				TotalTokens:  core.Float64Ptr(float64(total)),
-			}
-			record.SetDimension("workspace", statusWorkspace(payload))
-			snap.AppendModelUsage(record)
 		}
 	}
 
@@ -268,9 +266,8 @@ func projectCurrentUsageMetrics(snap *core.UsageSnapshot, usage statusLineCurren
 	setTokenMetric("current_output_tokens", usage.OutputTokens)
 	setTokenMetric("current_cache_read_tokens", usage.CacheReadTokens)
 	setTokenMetric("current_cache_write_tokens", usage.CacheWriteTokensValue())
-	if total := usage.TotalTokens(); total > 0 {
-		setTokenMetric("current_tokens", total)
-	}
+	// The contract does not define whether cache counters are included in
+	// input_tokens. Keep the reported components instead of inventing a sum.
 }
 
 func projectQuotaMetrics(snap *core.UsageSnapshot, payload statusLinePayload) {
