@@ -92,7 +92,9 @@ Missing, busy, locked, unsupported or inaccessible timing evidence does not
 discard successfully parsed ordinary usage. The reader scans at most 8,192
 database rows per pass, retains 16,384 allowlisted metadata events, accepts log
 bodies up to 64 KiB and uses a two-second read deadline with a 100 ms SQLite
-busy timeout. It tracks the row cursor, file identity and an anchor record to
+busy timeout. A soft 500 ms page budget commits already processed rows before
+that deadline; a busy host resumes at the next row on a later Collector cycle.
+It tracks the row cursor, file identity and an anchor record to
 detect rotation/replacement. A backlog remains unmeasured until the bounded
 scan catches up. Observed row-ID gaps or an incomplete retained interval cannot
 establish a unique start.

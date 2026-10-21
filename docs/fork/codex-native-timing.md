@@ -151,6 +151,8 @@ Historical measurements also do not imply a current wall-clock rate.
 
 The scan is bounded: at most 8,192 DB rows per pass, 16,384 retained native
 metadata events and 8,192 pending usage identities per profile/account scope.
+A soft 500 ms page budget can end a pass earlier while preserving its cursor;
+the hard read deadline remains two seconds, with a 100 ms SQLite busy timeout.
 Larger native DBs may need more existing Collector cycles to catch up, and
 older request identities may no longer be eligible for late enrichment. No
 extra collector loop or archive-wide scan is started to remove these limits.

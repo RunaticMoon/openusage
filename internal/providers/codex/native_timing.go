@@ -25,6 +25,7 @@ const (
 	// Commit a modest page before the query deadline, including under race/
 	// coverage instrumentation or a busy host. Subsequent polls resume by ID.
 	nativeTimingReadLimit  = 8192
+	nativeTimingPageBudget = 500 * time.Millisecond
 	nativeTimingEventLimit = 16384
 	nativeTimingBodyLimit  = 64 * 1024
 	nativeTimingUsageLimit = 8192
@@ -77,6 +78,9 @@ type nativeTimingReader struct {
 	floor     time.Time
 	more      bool
 	available bool
+	// Tests may shorten the soft budget to exercise a one-row page without
+	// sleeping. No caller can use it to relax the production deadline.
+	pageBudget time.Duration
 }
 
 func (r *nativeTimingReader) Scan(ctx context.Context, path string) (stats nativeTimingStats, err error) {
@@ -117,6 +121,11 @@ func (r *nativeTimingReader) Scan(ctx context.Context, path string) (stats nativ
 	}
 	defer db.Close()
 	db.SetMaxOpenConns(1)
+	budget := nativeTimingPageBudget
+	if r.pageBudget > 0 && r.pageBudget < budget {
+		budget = r.pageBudget
+	}
+	pageDeadline := time.Now().Add(budget)
 	readCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	tx, err := db.BeginTx(readCtx, &sql.TxOptions{ReadOnly: true})
@@ -174,6 +183,12 @@ func (r *nativeTimingReader) Scan(ctx context.Context, path string) (stats nativ
 		anchor = nativeTimingAnchor{}
 	}
 	for rows.Next() {
+		if stats.RowsRead > 0 && !time.Now().Before(pageDeadline) {
+			// Next has advanced the SQL iterator, but this row has not been
+			// processed or included in the cursor. Close the read snapshot with
+			// ample hard-deadline headroom; the next poll rereads this row.
+			break
+		}
 		var id, sec, nano int64
 		var process, body sql.NullString
 		var feedback sql.NullBool

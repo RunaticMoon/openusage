@@ -337,12 +337,20 @@ func TestNativeTimingBoundedIncrementalBackfill(t *testing.T) {
 	nativeTestRow(t, db, nativeTestEpoch.Add(3*time.Second), "feedback_tags", nativeTestEnd("response"), "process")
 	var r nativeTimingReader
 	s := nativeTestScan(t, &r, path)
-	if s.RowsRead != nativeTimingReadLimit || !s.More {
+	if s.RowsRead < 1 || s.RowsRead > nativeTimingReadLimit || !s.More {
 		t.Fatalf("unbounded backfill: %+v", s)
 	}
-	s = nativeTestScan(t, &r, path)
-	if s.RowsRead != 3 || s.More {
-		t.Fatalf("incremental remainder: %+v", s)
+	read := s.RowsRead
+	for pages := 1; s.More; pages++ {
+		previous := s.Cursor
+		s = nativeTestScan(t, &r, path)
+		read += s.RowsRead
+		if s.RowsRead < 1 || s.RowsRead > nativeTimingReadLimit || s.Cursor <= previous || pages > nativeTimingReadLimit+3 {
+			t.Fatalf("incremental page made no bounded progress: %+v", s)
+		}
+	}
+	if read != nativeTimingReadLimit+3 {
+		t.Fatalf("pages skipped or repeated rows: %d", read)
 	}
 	if m := r.MatchBatch([]nativeTimingUsage{nativeTestUsage("response", "thread", "turn")})["response"]; m.StartedAt.IsZero() {
 		t.Fatalf("backfilled timing unavailable: %+v", m)
@@ -424,13 +432,16 @@ func TestNativeTimingMetadataCapacityAndUsageCapacity(t *testing.T) {
 		}
 		// Already observed completions may prove success while the remaining
 		// pages could still contain conflicting starts; never infer yet.
-		if m := r.MatchBatch([]nativeTimingUsage{nativeTestUsage("response-0", "thread", "turn")})["response-0"]; m.StartedAt.IsZero() == false || m.Reason != "backfill_pending" {
-			t.Fatalf("partial scan inferred a duration: %+v", m)
+		if s.Cursor >= 2 {
+			id := fmt.Sprintf("response-%d", s.Cursor-2)
+			if m := r.MatchBatch([]nativeTimingUsage{nativeTestUsage(id, "thread", "turn")})[id]; !m.StartedAt.IsZero() || m.Reason != "backfill_pending" {
+				t.Fatalf("partial scan inferred a duration: %+v", m)
+			}
 		}
 		previous := s.Cursor
 		s = nativeTestScan(t, &r, path)
 		pages++
-		if s.Cursor <= previous || pages > (nativeTimingEventLimit+3)/nativeTimingReadLimit+1 {
+		if s.RowsRead < 1 || s.Cursor <= previous || pages > nativeTimingEventLimit+3 {
 			t.Fatalf("bounded backfill made no progress: %+v, pages=%d", s, pages)
 		}
 	}
@@ -466,5 +477,30 @@ func TestNativeTimingPrunedInteriorRangeCannotProveUniqueStart(t *testing.T) {
 	m := r.MatchBatch([]nativeTimingUsage{nativeTestUsage("response", "thread", "turn")})["response"]
 	if !m.Completed || !m.StartedAt.IsZero() || m.Reason != "partial_retention" || m.Contradicted {
 		t.Fatalf("pruned retry became unique: %+v", m)
+	}
+}
+
+func TestNativeTimingSoftBudgetCommitsProgressWithoutSkippingNextRow(t *testing.T) {
+	db, path := nativeTestDB(t)
+	nativeTestBaseline(t, db)
+	nativeTestRow(t, db, nativeTestEpoch.Add(time.Second), "feedback_tags", nativeTestStart("thread", "turn"), "process")
+	nativeTestRow(t, db, nativeTestEpoch.Add(3*time.Second), "feedback_tags", nativeTestEnd("response"), "process")
+	r := nativeTimingReader{pageBudget: time.Nanosecond}
+	usage := []nativeTimingUsage{nativeTestUsage("response", "thread", "turn")}
+	for page := int64(1); page <= 3; page++ {
+		s := nativeTestScan(t, &r, path)
+		if s.RowsRead != 1 || s.Cursor != page || s.More != (page < 3) {
+			t.Fatalf("soft budget lost committed progress: %+v", s)
+		}
+		m := r.MatchBatch(usage)["response"]
+		if page < 3 && !m.StartedAt.IsZero() {
+			t.Fatal("partial snapshot supplied timing")
+		}
+		if page == 3 && (m.StartedAt.IsZero() || m.CompletedAt.Sub(m.StartedAt) != 2*time.Second) {
+			t.Fatalf("advanced unprocessed row was skipped: %+v", m)
+		}
+	}
+	if s := nativeTestScan(t, &r, path); s.RowsRead != 0 || s.More || s.Cursor != 3 {
+		t.Fatalf("caught-up reader replayed rows: %+v", s)
 	}
 }
