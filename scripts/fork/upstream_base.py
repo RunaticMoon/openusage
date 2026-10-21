@@ -24,8 +24,13 @@ def select_tag(tags):
 def resolve(sha):
     if not re.fullmatch(r"[0-9a-f]{40}", sha):
         raise ValueError("A full build commit SHA is required")
-    tag = select_tag(git("tag", "--merged", sha, "--list", "v*").splitlines())
-    local = git("rev-parse", f"refs/tags/{tag}^{{commit}}")
+    # The main mirror deliberately does not publish upstream tags into the fork.
+    # Fetch into an isolated ref namespace, preserving local/fork tags unchanged.
+    git("fetch", "--quiet", "--no-tags", UPSTREAM_URL,
+        "refs/tags/v*:refs/openusage-upstream-tags/v*")
+    tag = select_tag(git("for-each-ref", f"--merged={sha}", "--format=%(refname:strip=2)",
+                         "refs/openusage-upstream-tags/").splitlines())
+    local = git("rev-parse", f"refs/openusage-upstream-tags/{tag}^{{commit}}")
     refs = dict(line.split()[::-1] for line in git(
         "ls-remote", "--exit-code", UPSTREAM_URL,
         f"refs/tags/{tag}", f"refs/tags/{tag}^{{}}").splitlines())

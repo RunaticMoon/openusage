@@ -51,8 +51,9 @@ The build script emits `dist/fork/<os>_arm64/openusage`, checksums, native linka
 information and JSON metadata. The version includes the fork SHA; metadata also
 identifies the newest stable upstream tag already contained in the build SHA,
 Go version, platform and patch registry checksum. Before building, the selected
-tag's peeled commit is checked against the official upstream Git remote; fetch
-upstream tags first, and allow read-only GitHub access for this verification.
+tag's peeled commit is checked against the official upstream Git remote. The
+script fetches official tags into a separate local ref namespace, including tags
+not published into the fork; allow read-only GitHub access for this verification.
 After a stable release sync, the derived base and default fork version advance
 automatically. A manual early-commit sync still names the latest included stable
 release; its full fork SHA identifies the additional ancestry. The script runs

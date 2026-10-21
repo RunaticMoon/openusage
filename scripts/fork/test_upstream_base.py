@@ -15,14 +15,15 @@ class BaseTests(unittest.TestCase):
     def test_merged_new_release_updates_metadata_and_supports_annotated_tag(self, git):
         sha = "a" * 40
         official = "b" * 40
-        git.side_effect = ["v0.26.1\nv0.27.0", official,
+        git.side_effect = ["", "v0.26.1\nv0.27.0", official,
                            f"{'c' * 40}\trefs/tags/v0.27.0\n{official}\trefs/tags/v0.27.0^{{}}"]
         self.assertEqual(resolve(sha), {"upstream_base_tag": "v0.27.0", "upstream_base_sha": official})
-        self.assertEqual(git.call_args_list[0].args, ("tag", "--merged", sha, "--list", "v*"))
+        self.assertIn("refs/tags/v*:refs/openusage-upstream-tags/v*", git.call_args_list[0].args)
+        self.assertIn("--merged=" + sha, git.call_args_list[1].args)
 
     @patch("upstream_base.git")
     def test_retagged_or_local_only_version_rejected(self, git):
-        git.side_effect = ["v0.27.0", "a" * 40, f"{'b' * 40}\trefs/tags/v0.27.0"]
+        git.side_effect = ["", "v0.27.0", "a" * 40, f"{'b' * 40}\trefs/tags/v0.27.0"]
         with self.assertRaisesRegex(ValueError, "does not match"):
             resolve("c" * 40)
 
