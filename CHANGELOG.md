@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Keep authenticated Claude subscription quotas polling when local session files are unchanged, under the existing adaptive polling schedule.
+- Persist verified unchanged Claude, Codex, OpenCode and DSH observations so successful revalidation advances the durable snapshot time without adding token usage events.
+- Preserve the original Claude quota observation time and value on authentication/API failure cache fallback, including after a reset boundary. Existing snapshot JSON and Hub contracts are unchanged.
+
 ## 0.26.1 (2026-10-10)
 
 <!-- Release notes generated using configuration in .github/release.yml at main -->

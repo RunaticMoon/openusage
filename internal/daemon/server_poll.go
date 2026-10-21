@@ -25,6 +25,28 @@ func pollSnapshotsForIngest(results []pollProviderResult) map[string]core.UsageS
 	return snapshots
 }
 
+// canRefreshUnchangedObservation is deliberately restricted to audited sources.
+// Other adapters can return cached quotas or local session limits with a new
+// snapshot timestamp. Until they expose trustworthy provenance, retain their
+// existing change-only ingestion instead of making fallback data look current.
+func canRefreshUnchangedObservation(snap core.UsageSnapshot) bool {
+	if snap.Status != core.StatusOK && snap.Status != core.StatusNearLimit && snap.Status != core.StatusLimited {
+		return false
+	}
+	switch snap.ProviderID {
+	case "claude_code":
+		return snap.Raw["usage_api_ok"] == "true"
+	case "codex":
+		return snap.Raw["rate_limit_source"] == "live" || snap.Raw["rate_limit_source"] == "cli_rpc"
+	case "opencode", "dsh":
+		// These adapters reread their source on each Fetch and do not substitute
+		// previously successful quota responses on failure.
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *Service) runPollLoop(ctx context.Context) {
 	ticker := time.NewTicker(s.cfg.PollInterval)
 	defer ticker.Stop()
@@ -147,7 +169,11 @@ func (s *Service) pollProviders(ctx context.Context) {
 			}
 			s.pollStateMu.Unlock()
 
-			results <- pollProviderResult{accountID: account.ID, snapshot: snap, shouldIngest: changed}
+			// A verified fetch is a new observation even when values did not
+			// change. Keep adaptive backoff driven by value changes. Unverified
+			// cached fallbacks retain the previous change-only behavior.
+			results <- pollProviderResult{accountID: account.ID, snapshot: snap,
+				shouldIngest: changed || canRefreshUnchangedObservation(snap)}
 		}(acct)
 	}
 
@@ -172,17 +198,17 @@ func (s *Service) pollProviders(ctx context.Context) {
 		return
 	}
 
-	changedSnapshots := pollSnapshotsForIngest(pollResults)
+	observedSnapshots := pollSnapshotsForIngest(pollResults)
 	var ingestErr error
-	if len(changedSnapshots) > 0 {
+	if len(observedSnapshots) > 0 {
 		ingestCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
-		ingestErr = s.ingestQuotaSnapshots(ingestCtx, changedSnapshots)
+		ingestErr = s.ingestQuotaSnapshots(ingestCtx, observedSnapshots)
 		cancel()
 	}
 	if ingestErr != nil && s.shouldLog("poll_ingest_warning", 10*time.Second) {
 		s.warnf("poll_ingest_warning", "error=%v", ingestErr)
 	}
-	if ingestErr == nil && len(changedSnapshots) > 0 {
+	if ingestErr == nil && len(observedSnapshots) > 0 {
 		s.markDataIngested()
 	}
 
@@ -190,11 +216,11 @@ func (s *Service) pollProviders(ctx context.Context) {
 	if ingestErr != nil || errorCount > 0 || s.shouldLog("poll_cycle_info", 45*time.Second) {
 		s.infof(
 			"poll_cycle",
-			"duration_ms=%d accounts=%d snapshots=%d changed=%d status_ok=%d status_auth=%d status_limited=%d status_error=%d status_unknown=%d ingest_error=%t",
+			"duration_ms=%d accounts=%d snapshots=%d observations=%d status_ok=%d status_auth=%d status_limited=%d status_error=%d status_unknown=%d ingest_error=%t",
 			durationMs,
 			len(accounts),
 			len(snapshots),
-			len(changedSnapshots),
+			len(observedSnapshots),
 			statusCounts[core.StatusOK],
 			statusCounts[core.StatusAuth],
 			statusCounts[core.StatusLimited],
