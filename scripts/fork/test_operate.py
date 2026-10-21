@@ -1,4 +1,5 @@
 """Synthetic files/SQLite databases only; service management is mocked."""
+from contextlib import closing
 import json
 from pathlib import Path
 import sqlite3
@@ -57,7 +58,7 @@ class OperationTests(unittest.TestCase):
         return {str(p.relative_to(self.root)): digest(p) for p in self.root.rglob("*") if p.is_file()}
 
     def rows(self, path):
-        with sqlite3.connect(path) as connection:
+        with closing(sqlite3.connect(path)) as connection:
             return connection.execute("SELECT count(*), sum(tokens) FROM events").fetchone()
 
     def test_default_dry_run_changes_no_file_and_calls_no_service(self):
@@ -115,15 +116,17 @@ class OperationTests(unittest.TestCase):
 
     def test_explicit_db_restore_preserves_newer_snapshot_and_never_restores_source(self):
         source = self.root / "opencode.sqlite"
-        with sqlite3.connect(source) as connection:
+        with closing(sqlite3.connect(source)) as connection:
             connection.execute("CREATE TABLE source_events(tokens INTEGER)")
             connection.execute("INSERT INTO source_events VALUES (1)")
+            connection.commit()
         self.cfg["databases"].append({"role": "opencode-source", "path": str(source)})
         original = backup(self.cfg, "before")
         self.writer.execute("INSERT INTO events(tokens) VALUES (20)")
         self.writer.commit()
-        with sqlite3.connect(source) as connection:
+        with closing(sqlite3.connect(source)) as connection:
             connection.execute("INSERT INTO source_events VALUES (2)")
+            connection.commit()
         with patch("operate.services"):
             result = execute(self.cfg, "rollback", apply=True, approval="explicit-database-restore",
                              rollback_backup=original, restore_db=True)
@@ -131,7 +134,7 @@ class OperationTests(unittest.TestCase):
         newer = Path(result["preservation_backup"])
         record = json.loads((newer / "backup.json").read_text())
         self.assertEqual(self.rows(newer / record["databases"][0]["stored"]), (2, 30))
-        with sqlite3.connect(source) as connection:
+        with closing(sqlite3.connect(source)) as connection:
             self.assertEqual(connection.execute("SELECT sum(tokens) FROM source_events").fetchone()[0], 3)
 
     def test_modified_binary_rejected_even_if_artifact_checksums_are_rewritten(self):
