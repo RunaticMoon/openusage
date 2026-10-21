@@ -120,6 +120,7 @@ func (s *Service) pollProviders(ctx context.Context) {
 			fetchCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 			defer cancel()
 
+			attemptedAt := s.beginCollectorAttempt("provider_poll", account.Provider, account.ID)
 			snap, fetchErr := provider.Fetch(fetchCtx, account)
 			if fetchErr != nil {
 				snap = core.UsageSnapshot{
@@ -131,6 +132,7 @@ func (s *Service) pollProviders(ctx context.Context) {
 				}
 			}
 			snap = core.NormalizeUsageSnapshotWithConfig(snap, modelNorm)
+			s.recordProviderHealth(account.Provider, account.ID, attemptedAt, snap, fetchErr)
 
 			// Track whether data actually changed for adaptive backoff.
 			changed := s.pollScheduler.SnapshotChanged(account.ID, snap)

@@ -49,11 +49,12 @@ type HookResponse struct {
 }
 
 type HealthResponse struct {
-	Status             string `json:"status"`
-	DaemonVersion      string `json:"daemon_version,omitempty"`
-	APIVersion         string `json:"api_version,omitempty"`
-	IntegrationVersion string `json:"integration_version,omitempty"`
-	ProviderRegistry   string `json:"provider_registry_hash,omitempty"`
+	Status             string                     `json:"status"`
+	DaemonVersion      string                     `json:"daemon_version,omitempty"`
+	APIVersion         string                     `json:"api_version,omitempty"`
+	IntegrationVersion string                     `json:"integration_version,omitempty"`
+	ProviderRegistry   string                     `json:"provider_registry_hash,omitempty"`
+	Collectors         map[string]CollectorHealth `json:"collectors,omitempty"`
 }
 
 type cachedReadModelEntry struct {
