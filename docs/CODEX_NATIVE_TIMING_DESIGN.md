@@ -8,7 +8,10 @@ timing database, OTLP receiver, plugin, new daemon or a model request.
 The measurement is **inferred log-boundary response speed**:
 `reported output_tokens * 1000 / elapsed_ms`. It includes local sampling setup
 and waiting before output. It is not direct provider timing, decode speed,
-visible-text throughput or TTFT. Missing evidence remains unmeasured.
+visible-text throughput or TTFT. Missing evidence remains unmeasured. Native v2 preserves inferred intervals but
+keeps outcome unknown: the retained metadata cannot distinguish all successful
+and interrupted responses. Consequently it does not currently publish Codex
+successful-response speed. See the [lifecycle correction](CODEX_LIFECYCLE_CORRECTION.md).
 
 ## Audited producer contract
 
@@ -19,7 +22,7 @@ The verified producer is Codex **0.163.0**, official tag `rust-v0.163.0`, commit
 | --- | --- |
 | Native JSONL `token_usage_record.response_id` and `usage.output_tokens` | [The usage writer](https://github.com/openai/codex/blob/83086188ae0614bd882818ff1aa23f3194962012/codex-rs/core/src/session/mod.rs#L4948) accepts completed and incomplete responses. This gives request identity and output, not success or elapsed time. |
 | `feedback_tags` event with sampling configuration fields | [`try_run_sampling_request`](https://github.com/openai/codex/blob/83086188ae0614bd882818ff1aa23f3194962012/codex-rs/core/src/session/turn.rs#L2630) emits these at sampling entry. The log context identifies process, thread and turn, but has no response ID. |
-| `feedback_tags.last_model_response_id` | [`map_response_events`](https://github.com/openai/codex/blob/83086188ae0614bd882818ff1aa23f3194962012/codex-rs/core/src/client.rs#L2572) emits this in `ResponseEvent::Completed`. An exact native response-ID join supplies successful completion evidence and a logged end time. |
+| `feedback_tags.last_model_response_id` | [`map_response_events`](https://github.com/openai/codex/blob/83086188ae0614bd882818ff1aa23f3194962012/codex-rs/core/src/client.rs#L2572) emits this in `ResponseEvent::Completed`. An exact native response-ID join supplies a logged endpoint only. The internal event also represents `response.incomplete(reason=interrupted)`, so it cannot prove success. |
 | SQLite `logs.ts`, `ts_nanos`, `process_uuid`, `feedback_log_body` | Native log event time, process scope and formatted fields. A log row timestamp is used only after recognizing the relevant producer event. |
 
 The reported output counter is retained unchanged. The pinned Responses
@@ -57,15 +60,16 @@ version claim about old log records.
    output. These are guards for this inferred adapter, not limits on other
    providers' verified direct clocks.
 5. Emit the existing performance fields with `inferred_log_boundary`, model
-   request scope and verified completion outcome. Never label this path
+   request scope and unknown outcome. Never label this path
    `provider_request_timestamps`. Insufficient evidence keeps the request
    unmeasured and leaves accounting available.
 
 The start occurs before all sampling setup has finished. Local preparation,
 authentication recovery, transport fallback or event processing can be inside
 the interval. Excluding an observable retry does not prove a pure single HTTP
-attempt. A terminal usage record without a completed tag still has unknown
-outcome. A completed tag without an acceptable start cannot supply a speed.
+attempt. A terminal usage record and a completed tag both leave outcome unknown.
+An acceptable start can supply interval metadata; neither boundary proves a
+successful response. Unknown outcome excludes success statistics and windows.
 
 Do not substitute `thread_turns.duration_ms`, task duration, message/item
 `started_at_ms`/`completed_at_ms`, command duration, HTTP handshake latency,
@@ -121,13 +125,23 @@ replaying a usage-only record does not erase independently accepted timing.
 Late DB records can enrich cached identities even if the last JSONL has since
 moved out of the configured active directory. No archive is opened to do so.
 
-Positive contradictions, such as competing starts or an observed authentication
-retry, revoke an inference and remain excluded at the same usage revision.
+Positive contradictions, such as competing starts, an observed overlapping
+sampler or authentication retry, revoke an inference and remain excluded at the
+same usage revision. An older unclosed turn is uncertainty rather than proven
+overlap: an exact, reviewed JSONL turn terminal strictly between its start and
+the later request start closes that competing local sampler. The terminal never
+provides request timing or outcome. Absence of a terminal is not repaired by an
+arbitrary age timeout. Terminals share the existing incremental JSONL pass and
+are bounded to the newest 8,192 entries per selected profile/account scope.
 Temporary ambiguity from a completed response whose usage scope has not yet
 arrived can recover when later JSONL identifies that scope. A missing/locked or
-rotated DB alone does not retract already accepted evidence. A late successful
-completion without a start updates the outcome while retaining a specific
-missing-clock reason; it does not manufacture a duration.
+rotated DB alone does not retract already accepted evidence. A late internal
+completion without a start retains a specific missing-clock reason and unknown
+outcome; it does not manufacture a duration or success. Native-v1 success
+claims are corrected to unknown during normalization even when their original
+logs or transcripts are no longer available. Incoming native-v2 evidence can
+replace the retired adapter verdict without adding accounting entries. Schema
+version 1 remains unchanged.
 
 ## Evidence and validation boundary
 
@@ -143,7 +157,7 @@ Synthetic and native-platform validation must establish:
 
 - disabled versus enabled token/cost and canonical identity equality;
 - exact completion-ID joins, profile/process isolation and stable replay;
-- explicit zero, missing output, success/unknown/failed outcome distinctions;
+- explicit zero, missing output, unknown native outcomes, explicit success/failure store correction distinctions;
 - retries, multiple starts/completions, overlap, clock and version rejection;
 - committed WAL visibility, busy/missing/permission/schema failure behavior;
 - late log completion, log rotation/truncation and cache invalidation;

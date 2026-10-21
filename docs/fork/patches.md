@@ -20,6 +20,8 @@ identity. None of these rows implies merge approval or production installation.
 | Operations and documentation | Private consistent SQLite backups, explicit staging/canary/rollback and accurate Hub/provider boundaries. | This documentation/operations PR | Synthetic filesystem/WAL/rollback tests; services mocked. Actual service replacement is separately approved. |
 | Codex native SQLite response timing | Enrich native response IDs directly from Codex diagnostic SQLite and usage JSONL, with conservative inferred boundaries and late completion/correction support. [Contract](../CODEX_NATIVE_TIMING_DESIGN.md), [operations](codex-native-timing.md). | `feat/codex-native-response-timing`; exact PR HEAD and native artifact metadata identify this change. | Native SQLite schema/WAL/lock/rotation, ambiguity/retry/profile/privacy, unchanged accounting and isolated Exporter/Hub regression tests. No usage-limit dependency, new migration or implied production deployment. |
 
+| Codex response lifecycle correction | Close old samplers only with exact terminal evidence; distinguish observed overlap; retire unjustified native-v1 success claims, including archived observations. [Source audit](../CODEX_LIFECYCLE_CORRECTION.md). | `fix/codex-response-lifecycle`; reviewed PR HEAD identifies the patch. | Lifecycle/replay/profile/outcome correction, unchanged accounting, native builds and isolated Hub tests. No new schema, extra collector or production deployment implied. |
+
 Any later integration corrections must be added with their actual commit/PR
 and JSON compatibility evidence when ready. Do not mark a planned field as
 already delivered. Native CI links
