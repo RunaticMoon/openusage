@@ -1,0 +1,93 @@
+name: Fork draft release
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: Full reviewed commit SHA already merged into custom
+        type: string
+        required: true
+      tag:
+        description: Explicit new fork tag, e.g. fork/v0.26.1-p1
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-draft-release
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    if: github.repository == 'RunaticMoon/openusage' && github.ref == 'refs/heads/custom'
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.validate.outputs.version }}
+    steps:
+      - name: Validate explicit tag, approved environment and merged source
+        id: validate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ inputs.commit_sha }}
+          TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$TAG" =~ ^fork/v[0-9]+\.[0-9]+\.[0-9]+-p[1-9][0-9]*$ ]]
+          status=$(gh api "repos/$GITHUB_REPOSITORY/compare/$SHA...custom" --jq .status)
+          [[ "$status" = ahead || "$status" = identical ]]
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            echo 'Refusing to reuse an existing tag' >&2
+            exit 1
+          fi
+          reviewers=$(gh api "repos/$GITHUB_REPOSITORY/environments/fork-release" --jq '[.protection_rules[] | select(.type == "required_reviewers") | .reviewers[]] | length')
+          test "$reviewers" -gt 0
+          version="${TAG#fork/v}"
+          printf 'version=%s\n' "${version/-p/-fork.p}" >> "$GITHUB_OUTPUT"
+  verify:
+    needs: gate
+    permissions:
+      contents: read
+    uses: ./.github/workflows/fork-ci.yaml
+    with:
+      candidate_sha: ${{ inputs.commit_sha }}
+      version: ${{ needs.gate.outputs.version }}
+  draft:
+    needs: [gate, verify]
+    environment: fork-release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          pattern: openusage-*-${{ inputs.commit_sha }}
+          path: artifacts
+      - name: Package verified artifacts and create draft only
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ inputs.commit_sha }}
+          TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          mkdir release
+          for platform in linux_arm64 darwin_arm64; do
+            dir="artifacts/openusage-$platform-$SHA"
+            (cd "$dir" && sha256sum -c checksums.txt)
+            test "$(jq -r .fork_sha "$dir/metadata.json")" = "$SHA"
+            chmod +x "$dir/openusage" # Artifact transport does not preserve executable mode.
+            tar -czf "release/openusage-${TAG#fork/}-$platform.tar.gz" -C "$dir" .
+          done
+          (cd release && sha256sum ./*.tar.gz > checksums.txt)
+          cat > release-notes.txt <<EOF
+          Reviewed fork source: $SHA
+          Upstream baseline: v0.26.1 / 299e3dbffb5a6827bd89d9037ef8e483e5073bfa
+          Patch registry, Go/toolchain/platform metadata and checksums are included in each archive.
+          Both native ARM64 targets passed tests, race detection, build and version execution.
+          These artifacts are unsigned. This draft does not install or deploy anything.
+          EOF
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$SHA" \
+            --draft --title "$TAG" --notes-file release-notes.txt release/*
