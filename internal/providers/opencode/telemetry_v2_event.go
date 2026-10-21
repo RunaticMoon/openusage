@@ -3,6 +3,7 @@ package opencode
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/janekbaraniewski/openusage/internal/core"
@@ -32,10 +33,13 @@ func parseV2TelemetryEvent(raw []byte) ([]shared.TelemetryEvent, bool, error) {
 	if sessionID == "" || messageID == "" {
 		return nil, true, fmt.Errorf("opencode v2 step is missing stable session/message IDs")
 	}
-	if _, ok := event.Data["tokens"].(map[string]any); !ok {
+	u, known, err := parseV2HookUsage(event.Data)
+	if err != nil {
+		return nil, true, err
+	}
+	if !known {
 		return nil, true, nil
 	}
-	u := extractUsage(event.Data)
 	status := shared.TelemetryStatusOK
 	if event.Type == "session.step.failed" {
 		status = shared.TelemetryStatusError
@@ -59,4 +63,63 @@ func parseV2TelemetryEvent(raw []byte) ([]shared.TelemetryEvent, bool, error) {
 		Status:  status,
 		Payload: map[string]any{"event_type": event.Type},
 	}}, true, nil
+}
+
+// Restrict extraction to validated native fields; absent buckets remain nil.
+// The shared normalizer's total is the known-bucket subtotal for partial usage.
+func parseV2HookUsage(data map[string]any) (usage, bool, error) {
+	const maxSafeInteger = float64(1<<53 - 1)
+	clean := map[string]any{}
+	known := false
+	subtotal := float64(0)
+	copyNumbers := func(from, to map[string]any, keys []string) error {
+		for _, key := range keys {
+			raw, present := from[key]
+			if !present {
+				continue
+			}
+			value, ok := raw.(float64)
+			if !ok || math.IsNaN(value) || math.IsInf(value, 0) || value < 0 || math.Trunc(value) != value || value > maxSafeInteger {
+				return fmt.Errorf("invalid opencode v2 token counter")
+			}
+			subtotal += value
+			if subtotal > maxSafeInteger {
+				return fmt.Errorf("opencode v2 token subtotal exceeds safe integer range")
+			}
+			to[key] = value
+			known = true
+		}
+		return nil
+	}
+	if raw, present := data["tokens"]; present {
+		tokens, ok := raw.(map[string]any)
+		if !ok {
+			return usage{}, false, fmt.Errorf("invalid opencode v2 tokens object")
+		}
+		cleanTokens := map[string]any{}
+		if err := copyNumbers(tokens, cleanTokens, []string{"input", "output", "reasoning"}); err != nil {
+			return usage{}, false, err
+		}
+		if raw, present := tokens["cache"]; present {
+			cache, ok := raw.(map[string]any)
+			if !ok {
+				return usage{}, false, fmt.Errorf("invalid opencode v2 cache object")
+			}
+			cleanCache := map[string]any{}
+			if err := copyNumbers(cache, cleanCache, []string{"read", "write"}); err != nil {
+				return usage{}, false, err
+			}
+			cleanTokens["cache"] = cleanCache
+		}
+		clean["tokens"] = cleanTokens
+	}
+	if raw, present := data["cost"]; present {
+		value, ok := raw.(float64)
+		if !ok || math.IsNaN(value) || math.IsInf(value, 0) || value < 0 {
+			return usage{}, false, fmt.Errorf("invalid opencode v2 cost")
+		}
+		clean["cost"] = value
+		known = true
+	}
+	return extractUsage(clean), known, nil
 }

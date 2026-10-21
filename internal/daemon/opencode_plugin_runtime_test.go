@@ -3,6 +3,7 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"io"
 	"net"
@@ -111,8 +112,8 @@ func TestOpenCodePluginRuntime(t *testing.T) {
 			}
 			switch mode {
 			case "live":
-				if count != 3 || total != 471 {
-					t.Fatalf("persisted count=%d tokens=%d; want 3/471 (duplicate/cumulative excluded)", count, total)
+				if count != 6 || total != 471 {
+					t.Fatalf("persisted count=%d tokens=%d; want 6/471 (duplicate/cumulative excluded)", count, total)
 				}
 				var provider, model, workspace, status, account string
 				var input, output, reasoning, cacheRead, cacheWrite int64
@@ -125,6 +126,20 @@ func TestOpenCodePluginRuntime(t *testing.T) {
 				}
 				if err := store.DB().QueryRow(`SELECT status FROM usage_events WHERE message_id='msg_failed_usage'`).Scan(&status); err != nil || status != "error" {
 					t.Fatalf("failed usage status=%q err=%v", status, err)
+				}
+				var knownInput, unknownOutput, unknownReasoning, unknownCache sql.NullInt64
+				var unknownCost sql.NullFloat64
+				if err := store.DB().QueryRow(`SELECT input_tokens,output_tokens,reasoning_tokens,cache_read_tokens,cost_usd FROM usage_events WHERE message_id='msg_unknown'`).Scan(&knownInput, &unknownOutput, &unknownReasoning, &unknownCache, &unknownCost); err != nil {
+					t.Fatal(err)
+				}
+				if !knownInput.Valid || knownInput.Int64 != 0 || unknownOutput.Valid || unknownReasoning.Valid || unknownCache.Valid || unknownCost.Valid {
+					t.Fatal("unknown fields were converted to explicit zero")
+				}
+				if err := store.DB().QueryRow(`SELECT input_tokens,output_tokens,cache_read_tokens,cost_usd FROM usage_events WHERE message_id='msg_zero'`).Scan(&knownInput, &unknownOutput, &unknownCache, &unknownCost); err != nil {
+					t.Fatal(err)
+				}
+				if knownInput.Valid || !unknownOutput.Valid || unknownOutput.Int64 != 0 || !unknownCache.Valid || unknownCache.Int64 != 0 || !unknownCost.Valid || unknownCost.Float64 != 0 {
+					t.Fatal("explicit zero fields lost")
 				}
 			case "legacy":
 				if count != 1 || total != 13 {

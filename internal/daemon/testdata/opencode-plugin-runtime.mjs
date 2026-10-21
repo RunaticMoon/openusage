@@ -80,6 +80,15 @@ const cleanup = await plugin.setup({
           yield event("session.step.failed", { assistantMessageID: "msg_no_usage", error: SECRET })
           yield event("session.step.started", { assistantMessageID: "msg_failed_usage", model: { providerID: "openai", id: "failed-model" } })
           yield event("session.step.failed", { assistantMessageID: "msg_failed_usage", tokens: usage, cost: 0.12, error: SECRET })
+          yield event("session.step.ended", { assistantMessageID: "msg_unknown", tokens: { input: 0 } })
+          yield event("session.step.ended", { assistantMessageID: "msg_zero", tokens: { output: 0, cache: { read: 0 } }, cost: 0 })
+          yield event("session.step.failed", { assistantMessageID: "msg_cost_only", cost: 0.02 })
+          for (const invalid of [
+            { tokens: { input: -1 } }, { tokens: { input: "1" } }, { tokens: { output: 0.5 } },
+            { tokens: { input: NaN } }, { tokens: { cache: { read: Infinity } } },
+            { tokens: { cache: [] } }, { tokens: { input: Number.MAX_SAFE_INTEGER, output: 1 } },
+            { tokens: { input: 0 }, cost: -0.01 }, { tokens: { input: 1 }, cost: "0" },
+          ]) yield event("session.step.ended", { assistantMessageID: "msg_invalid", ...invalid })
           secondBatchDone = true
         }
         if (!signal.aborted) await new Promise(resolve => signal.addEventListener("abort", resolve, { once: true }))

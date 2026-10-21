@@ -37,3 +37,43 @@ func TestParseV2StepHookMissingUsageAndIdentity(t *testing.T) {
 		t.Fatal("missing stable identity should fail")
 	}
 }
+
+func TestParseV2StepHookPreservesUnknownAndZero(t *testing.T) {
+	prefix := `{"event":{"type":"session.step.ended","created":1792540800000,"data":{"sessionID":"s","assistantMessageID":"m",`
+	for _, tc := range []struct {
+		name, fields string
+		input, cost  bool
+	}{
+		{"partial", `"tokens":{"input":0}`, true, false},
+		{"cost-only", `"cost":0`, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			events, err := ParseTelemetryHookPayload([]byte(prefix + tc.fields + `}}}`))
+			if err != nil || len(events) != 1 {
+				t.Fatalf("events=%d err=%v", len(events), err)
+			}
+			ev := events[0]
+			if (ev.InputTokens != nil) != tc.input || (ev.CostUSD != nil) != tc.cost {
+				t.Fatalf("known zero lost: %+v", ev.TokenUsage)
+			}
+			if ev.InputTokens != nil && *ev.InputTokens != 0 {
+				t.Fatal("zero input changed")
+			}
+			if ev.CostUSD != nil && *ev.CostUSD != 0 {
+				t.Fatal("zero cost changed")
+			}
+			if ev.OutputTokens != nil || ev.ReasoningTokens != nil || ev.CacheReadTokens != nil || ev.CacheWriteTokens != nil {
+				t.Fatalf("missing field became zero: %+v", ev.TokenUsage)
+			}
+		})
+	}
+	for _, fields := range []string{`"tokens":"bad"`, `"tokens":null`, `"tokens":{"input":"0"}`, `"tokens":{"input":-1}`, `"tokens":{"input":1.5}`, `"tokens":{"input":9007199254740992}`, `"tokens":{"input":9007199254740991,"output":1}`, `"tokens":{"cache":[]}`, `"tokens":{"cache":{"read":null}}`, `"cost":"0"`, `"cost":-1`, `"tokens":{"input":1},"cost":null`} {
+		if _, err := ParseTelemetryHookPayload([]byte(prefix + fields + `}}}`)); err == nil {
+			t.Fatalf("malformed usage accepted: %s", fields)
+		}
+	}
+	events, err := ParseTelemetryHookPayload([]byte(prefix + `"tokens":{},"usage":{"input_tokens":999}}}}`))
+	if err != nil || len(events) != 0 {
+		t.Fatal("unknown fields synthesized usage")
+	}
+}
