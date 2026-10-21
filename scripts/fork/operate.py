@@ -108,6 +108,9 @@ def verify_artifact(cfg):
     for entry in cfg.get("replacements", []):
         if digest(entry["source"]) != entry["sha256"]:
             raise ValueError("Replacement file changed after review")
+        target = Path(entry["target"])
+        if not target.parent.is_dir() or target.is_dir():
+            raise ValueError("Replacement target parent must exist and target must not be a directory")
     return metadata
 
 
@@ -294,6 +297,10 @@ def restore(cfg, location, restore_db):
 
 
 def execute(cfg, action, apply=False, approval="", rollback_backup=None, restore_db=False):
+    if action in ("deploy", "rollback") and not cfg.get("services"):
+        raise ValueError("Deployment/rollback requires explicit Collector/Exporter service definitions")
+    if action == "deploy" and not any(e["role"] == "binary" and Path(e["path"]).is_file() for e in cfg.get("files", [])):
+        raise ValueError("Deployment must back up an existing original binary explicitly")
     if action in ("stage", "deploy"):
         verify_artifact(cfg)
     if action == "rollback" and not rollback_backup:
@@ -315,8 +322,6 @@ def execute(cfg, action, apply=False, approval="", rollback_backup=None, restore
     if action == "stage":
         plan["staged_directory"] = str(stage(cfg))
         return plan
-    if action == "deploy" and not any(e["role"] == "binary" for e in cfg.get("files", [])):
-        raise ValueError("Deployment must back up the original binary explicitly")
     snapshot = backup(cfg, approval)
     plan["preservation_backup"] = str(snapshot)
     print(json.dumps({"preservation_backup": str(snapshot)}), flush=True)

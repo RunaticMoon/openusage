@@ -159,6 +159,15 @@ class OperationTests(unittest.TestCase):
             service.assert_not_called()
         self.assertEqual(before, self.tree())
 
+    def test_dry_run_catches_missing_target_parent_before_service_stop(self):
+        self.cfg["replacements"][0]["target"] = str(self.root / "missing" / "unit.service")
+        before = self.tree()
+        with patch("operate.services") as service:
+            with self.assertRaisesRegex(ValueError, "parent must exist"):
+                execute(self.cfg, "deploy")
+            service.assert_not_called()
+        self.assertEqual(before, self.tree())
+
     def test_failed_start_retains_recoverable_backup(self):
         with patch("operate.services", side_effect=[None, RuntimeError("synthetic startup failure")]):
             with self.assertRaisesRegex(RuntimeError, "startup failure"):
