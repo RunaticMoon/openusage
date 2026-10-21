@@ -1,7 +1,10 @@
 # Operating Codex native-log timing
 
-Codex request speed can use its own JSONL usage records and native
-`logs_2.sqlite`. The [adapter design](../CODEX_NATIVE_TIMING_DESIGN.md) explains
+Codex request interval metadata uses its own JSONL usage records and native
+`logs_2.sqlite`. The corrected v2 adapter leaves outcome unknown, because the
+retained completion tag also represents interrupted responses. Codex successful
+response speed therefore remains unavailable with these sources; usage still
+collects normally. See the [correction](../CODEX_LIFECYCLE_CORRECTION.md). The [adapter design](../CODEX_NATIVE_TIMING_DESIGN.md) explains
 the verified 0.163.0 producer contract, inferred boundaries and exclusions.
 There is no dependency on usage-limit, Paseo, a plugin, an OTLP collector or
 another service. Existing Codex logging is read as-is; this feature does not
@@ -105,10 +108,11 @@ isolated test Hub. Do not copy real credentials into the test setup.
 The optional `TestPerformanceRealCodexReadOnlyToHub` test requires both
 `OPENUSAGE_PERFORMANCE_REAL_CODEX_ROOT` and
 `OPENUSAGE_PERFORMANCE_REAL_CODEX_LOGS_DB`, pointing to explicitly approved
-personal source paths. It requires at least one accepted inferred measurement
-to prove the positive end-to-end path. A source with zero eligible records can
-still collect ordinary usage correctly; record that scope and its exclusion
-counts separately. Do not widen a production account to archives to satisfy a
+personal source paths. It verifies stored interval metadata, unknown-outcome
+exclusions, accounting equality and snapshot transport. Set
+`OPENUSAGE_PERFORMANCE_REAL_CODEX_REQUIRE_INTERVAL=1` to require at least one
+accepted inferred interval. Without it, zero intervals are reported explicitly
+and are not a claim of timing support or successful-response speed. Do not widen a production account to archives to satisfy a
 test. A separately approved archived-source test is distinct from operational
 active-source coverage. Full logs and source copies stay private on their host.
 
@@ -137,11 +141,12 @@ Use the existing supported `--db-path`, period and socket overrides when the
 installation requires them. The query reads existing performance metadata; it
 does not scan or enable native logs.
 
-Inspect the `inferred_log_boundary` classification, eligible output count,
-elapsed time, successful outcome and exclusion reasons. Direct counts must not
-increase from this adapter. Explicit zero output with valid evidence is zero
-speed; absent output/timing is unknown. A valid completed tag may prove success
-while an ambiguous or missing start still prevents a rate.
+Inspect `inferred_log_boundary`, reported output, elapsed time, unknown outcome
+and exclusion reasons separately. Direct and successful measured counts must
+not increase from native completion tags. Explicit output zero is preserved as
+zero output, but an unknown outcome still has no successful-response speed.
+A completed tag never proves success by itself. Retired v1 success claims are
+normalized to unknown even without source replay; no DB migration is required.
 
 An idle or newly started profile, rotated diagnostic logs, non-0.163.0 history,
 missing/busy/unreadable DB or ambiguous retries can leave zero measured
@@ -150,7 +155,8 @@ Do not turn task, item, tool or HTTP handshake timers into a fallback rate.
 Historical measurements also do not imply a current wall-clock rate.
 
 The scan is bounded: at most 8,192 DB rows per pass, 16,384 retained native
-metadata events and 8,192 pending usage identities per profile/account scope.
+metadata events, 8,192 pending usage identities and 8,192 turn-terminal
+observations per profile/account scope.
 A soft 500 ms page budget can end a pass earlier while preserving its cursor;
 the hard read deadline remains two seconds, with a 100 ms SQLite busy timeout.
 Larger native DBs may need more existing Collector cycles to catch up, and
@@ -167,7 +173,9 @@ Useful exclusion codes distinguish different causes:
 | `backfill_pending`, `partial_retention` | The bounded scan or retained log interval cannot yet prove a complete, unique association. |
 | `missing_completion`, `missing_start`, `missing_usage_scope` | Required native identity or boundary evidence is absent. A completed request can still have no measurable start. |
 | `ambiguous_unmapped_completion` | Another completion has unknown usage scope; later native JSONL may resolve it. |
-| `ambiguous_sampling_starts`, `ambiguous_completion`, `ambiguous_parallel_sampling`, `ambiguous_transport_retry`, `native_response_scope_conflict` | Positive conflicting evidence prevents the inferred rate. |
+| `ambiguous_parallel_sampling` | A prior turn has no known closure; a later exact turn terminal can resolve this uncertainty. Age alone cannot. |
+| `ambiguous_sampling_starts`, `ambiguous_completion`, `ambiguous_overlapping_sampling`, `ambiguous_transport_retry`, `native_response_scope_conflict` | Positive conflicting evidence prevents the inferred interval. |
+| `unknown_outcome` | A usable interval exists, but success is not proven; excluded from successful speed and recent output windows. |
 | `invalid_duration` | The inferred interval fails the 100 ms–15 min guard. |
 
 These codes describe request evidence. They do not replace local Collector
@@ -193,7 +201,12 @@ fork binary and restore only deployment-replaced settings. Preserve the current
 OpenUsage DB, optional performance tables, canonical History, refreshed auth,
 Codex source DB/logs and unrelated files. This adapter requires no down-migration
 or DB restoration. Retained inferred records may remain queryable after rollback;
-that does not mean the old binary is still refreshing native timing.
+that does not mean the old binary is still refreshing native timing. **An older
+binary can reintroduce the v1 success-classification defect on reads or later
+writes.** Schema readability is not semantic correctness. For that rollback,
+disable optional performance on the reverted Collector or clearly withhold
+Codex speed claims; preserve accounting and the current DB. Any settings/service
+change still requires the deployment approval boundary.
 
 ```sh
 python3 scripts/fork/operate.py rollback --manifest '/<private>/canary.json' \

@@ -77,7 +77,8 @@ func TestNativeTimingExactCompletionAndInferredSequence(t *testing.T) {
 	if got := r.MatchBatch([]nativeTimingUsage{nativeTestUsage("response", "thread", "turn")})["response"]; got != m {
 		t.Fatal("unchanged poll altered evidence")
 	}
-	// An unknown outcome can become successful even when its start is absent.
+	// A terminal marker can be observed even when its start is absent. It does
+	// not distinguish provider success from an interrupted response.
 	nativeTestRow(t, db, nativeTestEpoch.Add(4*time.Second), "feedback_tags", nativeTestEnd("no-start"), "other-process")
 	nativeTestScan(t, &r, path)
 	got := r.MatchBatch([]nativeTimingUsage{nativeTestUsage("no-start", "other-thread", "other-turn")})["no-start"]
@@ -103,7 +104,7 @@ func TestNativeTimingConservativeRejections(t *testing.T) {
 		}, nativeTestUsage("response", "thread", "turn"), "ambiguous_unmapped_completion", false, true},
 		{"parallel-turn", time.Second, 3 * time.Second, func(t *testing.T, d *sql.DB) {
 			nativeTestRow(t, d, nativeTestEpoch.Add(2*time.Second), "feedback_tags", nativeTestStart("thread", "other-turn"), "process")
-		}, nativeTestUsage("response", "thread", "turn"), "ambiguous_parallel_sampling", true, true},
+		}, nativeTestUsage("response", "thread", "turn"), "ambiguous_overlapping_sampling", true, true},
 		{"duplicate-completion", time.Second, 3 * time.Second, func(t *testing.T, d *sql.DB) {
 			nativeTestRow(t, d, nativeTestEpoch.Add(4*time.Second), "feedback_tags", nativeTestEnd("response"), "process")
 		}, nativeTestUsage("response", "thread", "turn"), "ambiguous_completion", true, true},
@@ -133,6 +134,136 @@ func TestNativeTimingConservativeRejections(t *testing.T) {
 				t.Fatalf("unexpected result: %+v", got)
 			}
 		})
+	}
+}
+
+func TestNativeTimingOldTurnTerminalRecoversWithoutChangingRequestBoundaries(t *testing.T) {
+	db, path := nativeTestDB(t)
+	nativeTestBaseline(t, db)
+	nativeTestRow(t, db, nativeTestEpoch.Add(time.Second), "feedback_tags", nativeTestStart("thread", "old-turn"), "process")
+	nativeTestRow(t, db, nativeTestEpoch.Add(time.Hour), "feedback_tags", nativeTestStart("thread", "turn"), "process")
+	nativeTestRow(t, db, nativeTestEpoch.Add(time.Hour+2*time.Second), "feedback_tags", nativeTestEnd("response"), "process")
+	var r nativeTimingReader
+	nativeTestScan(t, &r, path)
+	u := []nativeTimingUsage{nativeTestUsage("response", "thread", "turn")}
+	before := r.MatchBatch(u)["response"]
+	if before.Reason != "ambiguous_parallel_sampling" || before.Contradicted || !before.StartedAt.IsZero() {
+		t.Fatalf("old missing terminal must be recoverable ambiguity: %+v", before)
+	}
+	// A late-arriving rollout terminal closes only the old logical turn. Its
+	// timestamp must not be used to manufacture either request boundary.
+	terminals := []nativeTurnTerminal{{ThreadID: "thread", TurnID: "old-turn", At: nativeTestEpoch.Add(2 * time.Second)}}
+	after := r.MatchBatch(u, terminals)["response"]
+	if after.Reason != "inferred_native_sampling" || after.Contradicted || !after.Completed ||
+		!after.StartedAt.Equal(nativeTestEpoch.Add(time.Hour)) || after.CompletedAt.Sub(after.StartedAt) != 2*time.Second {
+		t.Fatalf("explicit old-turn closure did not preserve native boundaries: %+v", after)
+	}
+	if replay := r.MatchBatch(u, terminals)["response"]; replay != after {
+		t.Fatal("unchanged lifecycle evidence altered the result")
+	}
+	// The matcher does not hold terminal data across account/profile callers.
+	if replay := r.MatchBatch(u)["response"]; replay != before {
+		t.Fatal("lifecycle evidence escaped its caller-provided scope")
+	}
+}
+
+func TestNativeTimingTurnTerminalScopeAndStrictEventOrder(t *testing.T) {
+	tests := []struct {
+		name     string
+		terminal nativeTurnTerminal
+	}{
+		{"wrong-thread", nativeTurnTerminal{"other-thread", "old-turn", nativeTestEpoch.Add(2 * time.Second)}},
+		{"wrong-turn", nativeTurnTerminal{"thread", "other-turn", nativeTestEpoch.Add(2 * time.Second)}},
+		{"missing-thread", nativeTurnTerminal{"", "old-turn", nativeTestEpoch.Add(2 * time.Second)}},
+		{"invalid-turn", nativeTurnTerminal{"thread", "invalid turn", nativeTestEpoch.Add(2 * time.Second)}},
+		{"zero-time", nativeTurnTerminal{"thread", "old-turn", time.Time{}}},
+		{"before-old-start", nativeTurnTerminal{"thread", "old-turn", nativeTestEpoch}},
+		{"equal-old-start", nativeTurnTerminal{"thread", "old-turn", nativeTestEpoch.Add(time.Second)}},
+		{"equal-current-start", nativeTurnTerminal{"thread", "old-turn", nativeTestEpoch.Add(3 * time.Second)}},
+		{"inside-current-request", nativeTurnTerminal{"thread", "old-turn", nativeTestEpoch.Add(4 * time.Second)}},
+		{"after-current-request", nativeTurnTerminal{"thread", "old-turn", nativeTestEpoch.Add(6 * time.Second)}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			db, path := nativeTestDB(t)
+			nativeTestBaseline(t, db)
+			nativeTestRow(t, db, nativeTestEpoch.Add(time.Second), "feedback_tags", nativeTestStart("thread", "old-turn"), "process")
+			nativeTestRow(t, db, nativeTestEpoch.Add(3*time.Second), "feedback_tags", nativeTestStart("thread", "turn"), "process")
+			nativeTestRow(t, db, nativeTestEpoch.Add(5*time.Second), "feedback_tags", nativeTestEnd("response"), "process")
+			var r nativeTimingReader
+			nativeTestScan(t, &r, path)
+			got := r.MatchBatch([]nativeTimingUsage{nativeTestUsage("response", "thread", "turn")}, []nativeTurnTerminal{tc.terminal})["response"]
+			if got.Reason != "ambiguous_parallel_sampling" || got.Contradicted || !got.StartedAt.IsZero() {
+				t.Fatalf("unproven closure accepted: %+v", got)
+			}
+		})
+	}
+}
+
+func TestNativeTimingActualOverlapIsNotRecoveredByTerminal(t *testing.T) {
+	db, path := nativeTestDB(t)
+	nativeTestBaseline(t, db)
+	nativeTestRow(t, db, nativeTestEpoch.Add(time.Second), "feedback_tags", nativeTestStart("thread", "turn"), "process")
+	nativeTestRow(t, db, nativeTestEpoch.Add(2*time.Second), "feedback_tags", nativeTestStart("thread", "other-turn"), "process")
+	nativeTestRow(t, db, nativeTestEpoch.Add(4*time.Second), "feedback_tags", nativeTestEnd("response"), "process")
+	var r nativeTimingReader
+	nativeTestScan(t, &r, path)
+	u := []nativeTimingUsage{nativeTestUsage("response", "thread", "turn")}
+	for _, terminals := range [][]nativeTurnTerminal{
+		nil,
+		{{ThreadID: "thread", TurnID: "other-turn", At: nativeTestEpoch.Add(3 * time.Second)}},
+		{{ThreadID: "thread", TurnID: "other-turn", At: nativeTestEpoch.Add(5 * time.Second)}},
+	} {
+		got := r.MatchBatch(u, terminals)["response"]
+		if got.Reason != "ambiguous_overlapping_sampling" || !got.Contradicted || !got.StartedAt.IsZero() {
+			t.Fatalf("observed overlap was cleared: %+v", got)
+		}
+	}
+}
+
+func TestNativeTimingTerminalsDoNotBypassVersionProcessOrRetryGuards(t *testing.T) {
+	db, path := nativeTestDB(t)
+	nativeTestBaseline(t, db)
+	nativeTestRow(t, db, nativeTestEpoch.Add(time.Second), "feedback_tags", nativeTestStart("thread", "old-turn"), "process")
+	nativeTestRow(t, db, nativeTestEpoch.Add(time.Second), "feedback_tags", nativeTestStart("thread", "parallel-turn"), "other-process")
+	nativeTestRow(t, db, nativeTestEpoch.Add(3*time.Second), "feedback_tags", nativeTestStart("thread", "turn"), "process")
+	nativeTestRow(t, db, nativeTestEpoch.Add(5*time.Second), "feedback_tags", nativeTestEnd("response"), "process")
+	var r nativeTimingReader
+	nativeTestScan(t, &r, path)
+	terminals := []nativeTurnTerminal{{ThreadID: "thread", TurnID: "old-turn", At: nativeTestEpoch.Add(2 * time.Second)}}
+	u := []nativeTimingUsage{nativeTestUsage("response", "thread", "turn")}
+	if got := r.MatchBatch(u, terminals)["response"]; got.Reason != "inferred_native_sampling" {
+		t.Fatalf("another process's old turn blocked an isolated interval: %+v", got)
+	}
+	unknown := []nativeTimingUsage{{"response", "thread", "turn", "0.162.0"}}
+	if got := r.MatchBatch(unknown, terminals)["response"]; got.Completed || got.Reason != "unsupported_codex_version" {
+		t.Fatalf("terminal bypassed reviewed-version gate: %+v", got)
+	}
+	nativeTestRow(t, db, nativeTestEpoch.Add(4*time.Second), "feedback_tags", `auth_retry_after_unauthorized=true`, "process")
+	nativeTestScan(t, &r, path)
+	for _, ts := range [][]nativeTurnTerminal{nil, terminals} {
+		if got := r.MatchBatch(u, ts)["response"]; !got.Contradicted || got.Reason != "ambiguous_transport_retry" {
+			t.Fatalf("lifecycle evidence overrode a positive retry contradiction: %+v", got)
+		}
+	}
+}
+
+func TestNativeTimingTerminalBatchCapacityFailsClosed(t *testing.T) {
+	db, path := nativeTestDB(t)
+	nativeTestBaseline(t, db)
+	nativeTestRow(t, db, nativeTestEpoch.Add(time.Second), "feedback_tags", nativeTestStart("thread", "old-turn"), "process")
+	nativeTestRow(t, db, nativeTestEpoch.Add(3*time.Second), "feedback_tags", nativeTestStart("thread", "turn"), "process")
+	nativeTestRow(t, db, nativeTestEpoch.Add(5*time.Second), "feedback_tags", nativeTestEnd("response"), "process")
+	var r nativeTimingReader
+	nativeTestScan(t, &r, path)
+	terminal := nativeTurnTerminal{ThreadID: "thread", TurnID: "old-turn", At: nativeTestEpoch.Add(2 * time.Second)}
+	oversized := make([]nativeTurnTerminal, nativeTimingUsageLimit)
+	for i := range oversized {
+		oversized[i] = terminal
+	}
+	got := r.MatchBatch([]nativeTimingUsage{nativeTestUsage("response", "thread", "turn")}, []nativeTurnTerminal{terminal}, oversized)["response"]
+	if got.Reason != "ambiguous_parallel_sampling" || got.Contradicted || !got.StartedAt.IsZero() {
+		t.Fatalf("oversized terminal input bypassed fail-closed guard: %+v", got)
 	}
 }
 

@@ -38,6 +38,15 @@ func NormalizeRequest(input core.PerformanceRequest) core.PerformanceRequest {
 	if r.Outcome == "" {
 		r.Outcome = core.OutcomeUnknown
 	}
+	// The retired Codex adapter treated internal Completed as API success,
+	// although Codex also emits it for response.incomplete(interrupted). Correct
+	// old stored observations on read, including archived requests that are no
+	// longer in the configured scan. Keep their identity/output/clock metadata;
+	// no DB rewrite, archive scan, or accounting migration is needed.
+	if r.SourceSystem == "codex" && r.Namespace == "codex:response" &&
+		r.AdapterVersion == "codex_native_sqlite_v1" && r.Outcome == core.OutcomeSuccess {
+		r.Outcome = core.OutcomeUnknown
+	}
 	if r.Scope == "" {
 		r.Scope = core.ScopeUnknown
 	}

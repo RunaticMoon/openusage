@@ -11,7 +11,7 @@ include first-token latency and is not pure generation/decode speed.
 | Source and inspected version | Identity and output | Request timing | Current behavior |
 | --- | --- | --- | --- |
 | Claude Code 2.1.304, personal macOS native JSONL | `requestId`, with native `message.id` fallback; `message.usage.output_tokens` | Exact same-file `api-request.id` → `assistant.requestRef` join; logged start/assistant timestamps | Supported **inferred log boundary**. Final stop reason and success are required for measured statistics. Missing or conflicting joins remain unmeasured. |
-| Codex 0.163.0 native JSONL + native `logs_2.sqlite` | Exact `token_usage_record.response_id` → completed log tag; **only** `usage.output_tokens` | Unique sampling-start log in the same process/thread/turn → exact completed-response tag | Optional **inferred log boundary**, subject to version, scope, retry and ambiguity guards. Usage-only observations retain unknown outcome and unavailable timing. The `token_count` accounting stream is unchanged. See the [native timing design](CODEX_NATIVE_TIMING_DESIGN.md). |
+| Codex 0.163.0 native JSONL + native `logs_2.sqlite` | Exact `token_usage_record.response_id` → completed log tag; **only** `usage.output_tokens` | Unique sampling-start log in the same process/thread/turn → exact completed-response tag | **Inferred interval metadata only; successful-response speed unsupported** with the reviewed retained fields. Internal Completed also covers interrupted responses, so outcome stays unknown. Version, scope, retry and lifecycle guards still apply. The `token_count` accounting stream is unchanged. See the [native timing design](CODEX_NATIVE_TIMING_DESIGN.md). |
 | OpenCode v2.0.32 (macOS), v2.1.1 schema (Linux) | `session_message.id`, `tokens.output` | Native assistant `time.created` → `time.completed`, integer milliseconds | Supported direct provider request timestamps. A native successful finish is required. `tokens.reasoning` is separate and is never added to output. |
 | OpenCode v1 / legacy JSONL and hooks | Existing usage identity | No additional verified request-clock adapter in this change | Existing usage remains available; no fabricated performance. A v2 SQLite observation can enrich the same request later. |
 | DSH v0.2.1-rc.2, session format 4 | Existing native usage settlement identity and counters | Existing parser has action timestamps, routing context and retry markers; no verified matching request-start/end pair | Unsupported for speed. Do not join the latest context, turn, retry or prior action timestamp as an assumed request start. |
@@ -34,7 +34,7 @@ observations accepted by a performance adapter.
 | Emitted basis | Meaning |
 | --- | --- |
 | `claude.message.usage.output_tokens` | The raw output counter reported in the native message, unchanged. The inspected local log does not independently establish thinking-token inclusion for every configured billing route. It is **not a promise of visible-text-only output**; no separate thinking/reasoning field is added or subtracted. |
-| `codex.token_usage_record.usage.output_tokens` | The per-response reported output counter, unchanged. In Codex 0.163.0's OpenAI Responses mapping, reasoning is a detail within the reported output count, so it is not added again. Custom provider semantics are retained as reported rather than inferred from a model name. A rate requires additional accepted native-log completion and timing evidence. |
+| `codex.token_usage_record.usage.output_tokens` | The per-response reported output counter, unchanged. In Codex 0.163.0's OpenAI Responses mapping, reasoning is a detail within the reported output count, so it is not added again. Custom provider semantics are retained as reported rather than inferred from a model name. The retained native completion tag does not prove success; interval metadata alone cannot supply successful-response speed. |
 | `opencode.tokens.output_excludes_reasoning` | The native OpenCode v2 output bucket excludes its separate reasoning bucket. Only that output bucket is the numerator, including explicit zero when reasoning is positive. |
 
 The pinned [Codex Responses conversion](https://github.com/openai/codex/blob/83086188ae0614bd882818ff1aa23f3194962012/codex-rs/codex-api/src/sse/responses.rs#L123)
@@ -116,7 +116,9 @@ include the option state; rotation/truncation cannot reuse an unrelated start.
   Therefore a token-usage record cannot establish success by itself. Additional
   native diagnostic log evidence comes from the
   [sampling-entry feedback event](https://github.com/openai/codex/blob/83086188ae0614bd882818ff1aa23f3194962012/codex-rs/core/src/session/turn.rs#L2630)
-  and the [successful completed-response feedback tag](https://github.com/openai/codex/blob/83086188ae0614bd882818ff1aa23f3194962012/codex-rs/core/src/client.rs#L2572).
+  and the [internal completed-response feedback tag](https://github.com/openai/codex/blob/83086188ae0614bd882818ff1aa23f3194962012/codex-rs/core/src/client.rs#L2572).
+  The [lifecycle correction](CODEX_LIFECYCLE_CORRECTION.md) explains why that
+  internal tag also represents interrupted responses and cannot prove success.
   The [design](CODEX_NATIVE_TIMING_DESIGN.md) distinguishes this inferred join
   from direct request timing; [operations](fork/codex-native-timing.md) documents
   profile paths, optional enablement and data-preserving rollback.

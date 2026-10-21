@@ -59,6 +59,7 @@ func (p *Provider) Collect(ctx context.Context, opts shared.TelemetryCollectOpti
 	}
 
 	var out []shared.TelemetryEvent
+	var terminals []nativeTurnTerminal
 	pendingCache := make(map[string]*telemetryCacheEntry)
 	for path, info := range fileInfos {
 		if ctx.Err() != nil {
@@ -104,6 +105,8 @@ func (p *Provider) Collect(ctx context.Context, opts shared.TelemetryCollectOpti
 				nextState.performanceEnabled = opts.PerformanceEnabled
 				events, nextOffset, nextLineNumber, err := parseTelemetrySessionFileFrom(path, resumeOffset, resumeLineNumber, nextState)
 				if err == nil && nextOffset >= entry.byteOffset {
+					terminals = mergeCodexTurnTerminals(terminals, nextState.nativeTerminals)
+					nextState.nativeTerminals = nil
 					if accountID != "" {
 						for i := range events {
 							events[i].AccountID = accountID
@@ -141,6 +144,8 @@ func (p *Provider) Collect(ctx context.Context, opts shared.TelemetryCollectOpti
 		if err != nil {
 			continue
 		}
+		terminals = mergeCodexTurnTerminals(terminals, state.nativeTerminals)
+		state.nativeTerminals = nil
 		if accountID != "" {
 			for i := range events {
 				events[i].AccountID = accountID
@@ -160,7 +165,7 @@ func (p *Provider) Collect(ctx context.Context, opts shared.TelemetryCollectOpti
 		p.telemetryCache[path] = entry
 	}
 	if opts.PerformanceEnabled {
-		out = p.enrichNativeTiming(ctx, opts, sessionsDir, accountID, out)
+		out = p.enrichNativeTiming(ctx, opts, sessionsDir, accountID, out, terminals)
 	}
 	return out, nil
 }
@@ -375,6 +380,8 @@ func ParseTelemetrySessionFile(path string, performanceEnabled ...bool) ([]share
 type telemetryParserState struct {
 	performanceEnabled bool
 	cliVersion         string
+	nativeThreadID     string
+	nativeTerminals    []nativeTurnTerminal
 	sessionID          string
 	model              string
 	upstreamProviderID string
@@ -401,6 +408,7 @@ func (s *telemetryParserState) clone() *telemetryParserState {
 		return nil
 	}
 	cloned := *s
+	cloned.nativeTerminals = nil
 	return &cloned
 }
 
@@ -410,6 +418,13 @@ func applyTelemetrySessionMeta(state *telemetryParserState, meta *sessionMetaPay
 	}
 	if sid := core.FirstNonEmpty(meta.SessionID, meta.ID); sid != "" {
 		state.sessionID = sid
+	}
+	// Native session_id is the root thread's ID, whereas id identifies this
+	// particular thread (including a spawned child). Keep accounting's existing
+	// session association unchanged; lifecycle joins must use the exact thread.
+	state.nativeThreadID = ""
+	if nativeTimingIdentifier(meta.ID) {
+		state.nativeThreadID = meta.ID
 	}
 	// ProvenanceModel is the last-resort source: Codex CLI 0.147.0 dropped the
 	// explicit model from the session header, so without it every turn falls
@@ -488,6 +503,9 @@ func parseTelemetrySessionFileFrom(path string, byteOffset int64, lineNumber int
 			}
 		case record.EventPayload != nil:
 			payload := record.EventPayload
+			if state.performanceEnabled {
+				collectCodexTurnTerminal(record, state)
+			}
 			if payload.Type == "thread_settings_applied" {
 				applyTelemetryThreadSettings(state, payload)
 				if strings.TrimSpace(state.model) != "" && len(pending) > 0 {

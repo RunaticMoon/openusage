@@ -2,8 +2,9 @@ package codex
 
 // This reader uses only Codex's own logs SQLite database. The reviewed producer
 // is openai/codex 83086188 (0.163.0): turn.rs sampling feedback tags precede
-// client.rs's successful response feedback tag. The first boundary has no
-// response ID; any duration derived here is inferred, never direct timing.
+// client.rs's terminal response feedback tag. That tag also covers interrupted
+// responses, so it does not prove success. The first boundary has no response ID;
+// any duration derived here is inferred, never direct timing.
 
 import (
 	"context"
@@ -38,6 +39,8 @@ type nativeTimingUsage struct {
 }
 
 type nativeTimingMatch struct {
+	// Completed means a native terminal feedback tag was observed, not that the
+	// provider response succeeded: 0.163.0 normalizes interrupted responses too.
 	Completed              bool
 	StartedAt, CompletedAt time.Time
 	Reason                 string
@@ -472,7 +475,7 @@ func nativeTimingUnique(fields map[string][]string, keys ...string) string {
 
 type nativeTimingScope struct{ process, thread, turn string }
 
-func (r *nativeTimingReader) MatchBatch(usage []nativeTimingUsage) map[string]nativeTimingMatch {
+func (r *nativeTimingReader) MatchBatch(usage []nativeTimingUsage, terminalBatches ...[]nativeTurnTerminal) map[string]nativeTimingMatch {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	out := make(map[string]nativeTimingMatch)
@@ -501,6 +504,27 @@ func (r *nativeTimingReader) MatchBatch(usage []nativeTimingUsage) map[string]na
 			out[id] = nativeTimingMatch{Reason: "logs_unavailable"}
 		}
 		return out
+	}
+	// Terminals belong to the same profile/account's reviewed-version JSONL
+	// pass. They only close an older logical turn; their times never become a
+	// model request boundary or a success signal. An oversized batch is ignored
+	// rather than selectively dropping evidence and claiming a complete view.
+	type terminalScope struct{ thread, turn string }
+	terminals := make(map[terminalScope][]time.Time)
+	terminalCount := 0
+	for _, batch := range terminalBatches {
+		terminalCount += len(batch)
+		if terminalCount > nativeTimingUsageLimit {
+			terminals = nil
+			break
+		}
+		for _, terminal := range batch {
+			if !nativeTimingIdentifier(terminal.ThreadID) || !nativeTimingIdentifier(terminal.TurnID) || terminal.At.IsZero() {
+				continue
+			}
+			key := terminalScope{terminal.ThreadID, terminal.TurnID}
+			terminals[key] = append(terminals[key], terminal.At)
+		}
 	}
 	starts := make(map[nativeTimingScope][]nativeTimingEvent)
 	ends := make(map[string][]nativeTimingEvent)
@@ -619,8 +643,11 @@ func (r *nativeTimingReader) MatchBatch(usage []nativeTimingUsage) map[string]na
 				m.EvidenceRevision = max(m.EvidenceRevision, b.id)
 			}
 		}
-		// Different turns in the same thread/process may overlap. A prior start
-		// is closed only by a known matching completion before this start.
+		// Different turns in the same thread/process may overlap. An old start
+		// can also be closed by an explicit task_complete/turn_aborted record
+		// before this candidate starts. Abort proves local abandonment, not remote
+		// response completion. A start observed inside this interval remains a
+		// positive overlap; a merely unclosed old start is recoverable ambiguity.
 		for otherKey, ss := range starts {
 			if otherKey.process != key.process || otherKey.thread != key.thread || otherKey.turn == key.turn {
 				continue
@@ -637,8 +664,21 @@ func (r *nativeTimingReader) MatchBatch(usage []nativeTimingUsage) map[string]na
 					}
 				}
 				if !closed {
-					m.Reason = "ambiguous_parallel_sampling"
-					m.Contradicted = true
+					for _, at := range terminals[terminalScope{otherKey.thread, otherKey.turn}] {
+						if at.After(other.at) && at.Before(s.at) {
+							closed = true
+							break
+						}
+					}
+				}
+				if !closed {
+					if !m.Contradicted {
+						m.Reason = "ambiguous_parallel_sampling"
+						m.Contradicted = !other.at.Before(s.at)
+						if m.Contradicted {
+							m.Reason = "ambiguous_overlapping_sampling"
+						}
+					}
 					m.EvidenceRevision = max(m.EvidenceRevision, other.id)
 				}
 			}

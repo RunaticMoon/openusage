@@ -177,6 +177,9 @@ func (s *Store) upsertPerformance(ctx context.Context, tx *sql.Tx, req IngestReq
 
 func mergePerformanceObservation(old, in core.PerformanceRequest) core.PerformanceRequest {
 	out := old.DeepClone()
+	oldCodexV2 := codexNativeAdapter(old, "codex_native_sqlite_v2")
+	reviewedCodexOutcome := codexReviewedOutcome(in)
+	upgradeCodexV1 := codexNativeAdapter(old, "codex_native_sqlite_v1") && reviewedCodexOutcome
 	// Final observations supersede partials. Once final, a delayed partial never
 	// regresses it. Source revisions allow downward as well as upward corrections.
 	replace := (!old.Final && in.Final) || (in.Revision > old.Revision && (!old.Final || in.Final))
@@ -202,8 +205,25 @@ func mergePerformanceObservation(old, in core.PerformanceRequest) core.Performan
 			out.Outcome = old.Outcome
 		}
 	}
+	// v1 confused an internal Completed event with provider success. A reviewed
+	// v2 observation revalidates that claim even when its logs have expired. Once
+	// v2 has proof, missing logs/older adapters cannot erase or recreate it. A
+	// positive interruption is terminal for this native response identity.
+	if upgradeCodexV1 {
+		out.Outcome = in.Outcome
+	} else if oldCodexV2 {
+		out.Outcome = old.Outcome
+		if reviewedCodexOutcome && codexOutcomeRank(in.Outcome) > codexOutcomeRank(old.Outcome) {
+			out.Outcome = in.Outcome
+		}
+	}
 	outcomeEnriched := in.Final && in.Revision >= old.Revision && knownOutcome(in.Outcome) &&
 		out.Outcome == in.Outcome && (!old.Final || old.Outcome != out.Outcome)
+	if reviewedCodexOutcome && (upgradeCodexV1 || oldCodexV2) && old.Outcome != out.Outcome && out.Outcome == in.Outcome {
+		// Native usage revisions order counters, not separately observed outcome
+		// evidence. Keep the reason for an accepted reclassification as well.
+		outcomeEnriched = true
+	}
 	oldRank, newRank := performanceTimingRank(old), performanceTimingRank(in)
 	// A partial interval ends before the request is settled. Final output must
 	// never use that partial end, even when its timing basis ranks higher.
@@ -222,13 +242,28 @@ func mergePerformanceObservation(old, in core.PerformanceRequest) core.Performan
 	}
 	// A completed response whose JSONL identity has not arrived is a temporary
 	// association barrier, not proof that the prior association was false.
-	const recoverableBoundary = "ambiguous_unmapped_completion"
-	stickyRevocation := old.Final && inferredRevoked(old) && old.ExclusionReason != recoverableBoundary && in.Revision <= old.Revision
+	recoverableBoundary := func(r core.PerformanceRequest) bool {
+		return r.ExclusionReason == "ambiguous_unmapped_completion" ||
+			(codexNativeAdapter(r, "codex_native_sqlite_v2") && r.ExclusionReason == "ambiguous_parallel_sampling")
+	}
+	stickyRevocation := old.Final && inferredRevoked(old) && !recoverableBoundary(old) && in.Revision <= old.Revision && !upgradeCodexV1
 	if stickyRevocation && in.TimingBasis == core.TimingInferredLogBoundary {
 		useNewTiming = false
 	}
-	if in.Final && in.Revision >= old.Revision && inferredRevoked(in) && old.TimingBasis == core.TimingInferredLogBoundary && (!stickyRevocation || in.ExclusionReason != recoverableBoundary) {
+	if in.Final && in.Revision >= old.Revision && inferredRevoked(in) && old.TimingBasis == core.TimingInferredLogBoundary && (!stickyRevocation || !recoverableBoundary(in)) {
 		useNewTiming = true
+	}
+	if upgradeCodexV1 && oldRank < 20 {
+		// Do not combine newly proved success with an unreviewed v1 interval.
+		// Missing v2 timing retires the old inference; only fresh valid evidence
+		// can recover it. Independently direct timing keeps its higher priority.
+		useNewTiming = true
+	}
+	if oldCodexV2 && !reviewedCodexOutcome && newRank <= oldRank {
+		useNewTiming = false
+	}
+	if oldCodexV2 && codexNativeAdapter(in, "codex_native_sqlite_v1") {
+		useNewTiming = false
 	}
 	if out.Final && !old.Final {
 		useNewTiming = true
@@ -267,7 +302,64 @@ func mergePerformanceObservation(old, in core.PerformanceRequest) core.Performan
 			out.AdapterVersion = in.AdapterVersion
 		}
 	}
+	if upgradeCodexV1 || oldCodexV2 {
+		if upgradeCodexV1 {
+			out.Evidence = append(append([]string(nil), in.Evidence...), out.Evidence...)
+		}
+		// Keep one outcome certificate matching the retained outcome. A newer
+		// counter revision carries no authority to replace that certificate.
+		evidence := make([]string, 0, len(out.Evidence)+1)
+		certificate := "codex_outcome_v2:" + string(out.Outcome)
+		certificateSeen := false
+		for _, code := range out.Evidence {
+			if strings.HasPrefix(code, "codex_outcome_v2:") {
+				if !certificateSeen {
+					evidence = append(evidence, certificate)
+					certificateSeen = true
+				}
+			} else {
+				evidence = append(evidence, code)
+			}
+		}
+		if !certificateSeen {
+			evidence = append([]string{certificate}, evidence...)
+		}
+		out.Evidence = evidence
+		out.Evidence = performance.NormalizeRequest(out).Evidence
+		out.AdapterVersion = "codex_native_sqlite_v2"
+	}
 	return out
+}
+
+func codexNativeAdapter(r core.PerformanceRequest, adapter string) bool {
+	return r.Final && r.SourceSystem == "codex" && r.Namespace == "codex:response" && r.AdapterVersion == adapter
+}
+
+func codexReviewedOutcome(r core.PerformanceRequest) bool {
+	if !codexNativeAdapter(r, "codex_native_sqlite_v2") {
+		return false
+	}
+	count := 0
+	for _, code := range r.Evidence {
+		if strings.HasPrefix(code, "codex_outcome_v2:") {
+			if code != "codex_outcome_v2:"+string(r.Outcome) {
+				return false
+			}
+			count++
+		}
+	}
+	return count == 1 && (r.Outcome == core.OutcomeUnknown || r.Outcome == core.OutcomeSuccess || r.Outcome == core.OutcomeFailed)
+}
+
+func codexOutcomeRank(outcome core.PerformanceOutcome) int {
+	switch outcome {
+	case core.OutcomeSuccess:
+		return 1
+	case core.OutcomeFailed:
+		return 2
+	default:
+		return 0
+	}
 }
 
 func performanceTimingRank(r core.PerformanceRequest) int {
