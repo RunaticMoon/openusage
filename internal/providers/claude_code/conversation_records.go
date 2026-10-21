@@ -8,21 +8,24 @@ import (
 	"reflect"
 	"strings"
 	"time"
+
+	"github.com/janekbaraniewski/openusage/internal/core"
 )
 
 type conversationRecord struct {
-	lineNumber int
-	timestamp  time.Time
-	model      string
-	usage      *jsonlUsage
-	requestID  string
-	messageID  string
-	sessionID  string
-	cwd        string
-	sourcePath string
-	content    []jsonlContent
-	agentID    string
-	costUSD    *float64 // pre-computed cost from the JSONL entry, if present
+	lineNumber  int
+	timestamp   time.Time
+	model       string
+	usage       *jsonlUsage
+	requestID   string
+	messageID   string
+	sessionID   string
+	cwd         string
+	sourcePath  string
+	content     []jsonlContent
+	agentID     string
+	costUSD     *float64 // pre-computed cost from the JSONL entry, if present
+	performance *core.PerformanceRequest
 }
 
 func parseConversationRecords(path string) []conversationRecord {
@@ -119,6 +122,14 @@ func mergeStreamingDuplicates(records []conversationRecord) []conversationRecord
 			continue
 		}
 		if existingIdx, ok := indexByKey[key]; ok {
+			// Performance follows the latest native observation, independently
+			// of the established MAX accounting merge and earliest billing time.
+			previousPerformance := out[existingIdx].performance
+			if rec.performance != nil && (previousPerformance == nil ||
+				(!previousPerformance.Final && rec.performance.Final) ||
+				((!previousPerformance.Final || rec.performance.Final) && rec.performance.ObservedAt.After(previousPerformance.ObservedAt))) {
+				out[existingIdx].performance = rec.performance
+			}
 			mergeUsageMax(out[existingIdx].usage, rec.usage)
 			out[existingIdx].content = appendNewContentBlocks(out[existingIdx].content, rec.content)
 			// Prefer the earliest timestamp so block boundaries stay

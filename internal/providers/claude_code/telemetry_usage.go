@@ -55,23 +55,38 @@ func (p *Provider) Collect(ctx context.Context, opts shared.TelemetryCollectOpti
 		}
 
 		// Check cache: skip unchanged files entirely.
-		if entry, ok := p.telemetryCache[path]; ok {
+		cacheKey := path
+		if opts.PerformanceEnabled {
+			cacheKey += "|performance:true"
+		}
+		if entry, ok := p.telemetryCache[cacheKey]; ok && (!opts.PerformanceEnabled || entry.sourceInfo == nil || os.SameFile(entry.sourceInfo, info)) {
 			if entry.modTime.Equal(info.ModTime()) && entry.size == info.Size() {
 				continue
 			}
-			if info.Size() == entry.byteSize {
+			if info.Size() == entry.byteSize && !opts.PerformanceEnabled {
 				entry.modTime = info.ModTime()
 				entry.size = info.Size()
 				continue
 			}
 			// File grew (append-only): parse only new lines.
 			if info.Size() > entry.byteSize && entry.byteSize > 0 {
-				newEvents, newSize, err := parseTelemetryConversationFileFrom(path, entry.byteSize)
+				var newEvents []shared.TelemetryEvent
+				var newSize int64
+				var err error
+				var performanceState *claudePerformanceState
+				if opts.PerformanceEnabled {
+					performanceState = entry.performanceState.clone()
+					newEvents, newSize, err = parsePerformanceConversationFile(path, entry.byteSize, performanceState, false)
+				} else {
+					newEvents, newSize, err = parseTelemetryConversationFileFrom(path, entry.byteSize)
+				}
 				if err == nil && newSize > entry.byteSize {
-					pendingCache[path] = &telemetryCacheEntry{
-						modTime:  info.ModTime(),
-						size:     max(info.Size(), newSize),
-						byteSize: newSize,
+					pendingCache[cacheKey] = &telemetryCacheEntry{
+						sourceInfo:       info,
+						modTime:          info.ModTime(),
+						size:             max(info.Size(), newSize),
+						byteSize:         newSize,
+						performanceState: performanceState,
 					}
 					out = append(out, newEvents...)
 					continue
@@ -79,23 +94,35 @@ func (p *Provider) Collect(ctx context.Context, opts shared.TelemetryCollectOpti
 			}
 		}
 		if baselineInitialFiles {
-			p.telemetryCache[path] = &telemetryCacheEntry{
-				modTime:  info.ModTime(),
-				size:     info.Size(),
-				byteSize: info.Size(),
+			p.telemetryCache[cacheKey] = &telemetryCacheEntry{
+				sourceInfo: info,
+				modTime:    info.ModTime(),
+				size:       info.Size(),
+				byteSize:   info.Size(),
 			}
 			continue
 		}
 
 		// Full parse (cache miss or file shrunk).
-		events, err := ParseTelemetryConversationFile(path)
+		var events []shared.TelemetryEvent
+		var performanceState *claudePerformanceState
+		parsedSize := info.Size()
+		var err error
+		if opts.PerformanceEnabled {
+			performanceState = newClaudePerformanceState()
+			events, parsedSize, err = parsePerformanceConversationFile(path, 0, performanceState, true)
+		} else {
+			events, err = ParseTelemetryConversationFile(path)
+		}
 		if err != nil {
 			continue
 		}
-		pendingCache[path] = &telemetryCacheEntry{
-			modTime:  info.ModTime(),
-			size:     info.Size(),
-			byteSize: info.Size(),
+		pendingCache[cacheKey] = &telemetryCacheEntry{
+			sourceInfo:       info,
+			modTime:          info.ModTime(),
+			size:             info.Size(),
+			byteSize:         parsedSize,
+			performanceState: performanceState,
 		}
 		out = append(out, events...)
 	}
@@ -236,8 +263,9 @@ func telemetryEventsFromRecords(path string, records []conversationRecord, withL
 				TotalTokens:      core.Int64Ptr(totalTokens),
 				CostUSD:          core.Float64Ptr(cost),
 			},
-			Status:  shared.TelemetryStatusOK,
-			Payload: messagePayload,
+			Status:      shared.TelemetryStatusOK,
+			Payload:     messagePayload,
+			Performance: record.performance,
 		})
 
 		for idx, part := range record.content {

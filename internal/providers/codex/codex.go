@@ -41,6 +41,7 @@ type Provider struct {
 }
 
 type telemetryCacheEntry struct {
+	sourceInfo os.FileInfo
 	modTime    time.Time
 	size       int64
 	byteOffset int64
