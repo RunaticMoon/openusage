@@ -25,6 +25,18 @@ func mapProviderEvent(sourceSystem string, ev shared.TelemetryEvent, accountOver
 		ToolName:            ev.ToolName,
 		Status:              mapProviderStatus(ev.Status),
 		Payload:             ev.Payload,
+		Performance:         ev.Performance,
+		PerformanceOnly:     ev.PerformanceOnly,
+	}
+	if ev.Performance != nil {
+		perf := ev.Performance.DeepClone()
+		perf.SourceSystem = sourceSystem
+		perf.AccountID = core.FirstNonEmpty(accountOverride, perf.AccountID, "unknown")
+		perf.SessionID = core.FirstNonEmpty(perf.SessionID, ev.SessionID)
+		perf.ModelID = core.FirstNonEmpty(perf.ModelID, ev.ModelRaw, "unknown")
+		perf.BillingProviderID = core.FirstNonEmpty(perf.BillingProviderID, "unknown")
+		req.Performance = &perf
+		req.PerformanceSourcePath = perf.SourcePath
 	}
 	if req.AccountID == "" {
 		req.AccountID = "default"

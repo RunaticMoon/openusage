@@ -19,7 +19,22 @@ type UIConfig struct {
 	CritThreshold          float64 `json:"crit_threshold"`
 }
 
+// PerformanceConfig enables optional local request timing. It never enables network probes.
+type PerformanceConfig struct {
+	Enabled bool `json:"enabled"`
+	// BufferMinutes is bounded to 30 or 60; zero means 30.
+	BufferMinutes int `json:"buffer_minutes,omitempty"`
+}
+
+func (p PerformanceConfig) WindowMinutes() int {
+	if p.BufferMinutes == 60 {
+		return 60
+	}
+	return 30
+}
+
 type TelemetryConfig struct {
+	Performance PerformanceConfig `json:"performance,omitempty"`
 	// ProviderLinks maps source telemetry provider IDs to configured provider IDs.
 	// Example: {"anthropic":"claude_code"}.
 	ProviderLinks map[string]string `json:"provider_links"`
@@ -467,6 +482,7 @@ func normalizeAccounts(in []core.AccountConfig) []core.AccountConfig {
 
 func normalizeTelemetryConfig(in TelemetryConfig) TelemetryConfig {
 	out := TelemetryConfig{
+		Performance:   in.Performance,
 		ProviderLinks: DefaultProviderLinks(),
 	}
 	for source, target := range in.ProviderLinks {

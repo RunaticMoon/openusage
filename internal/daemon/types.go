@@ -20,6 +20,7 @@ type Config struct {
 	CollectInterval time.Duration
 	PollInterval    time.Duration
 	Verbose         bool
+	Performance     config.PerformanceConfig
 	Export          config.ExportConfig
 }
 

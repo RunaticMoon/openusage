@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/janekbaraniewski/openusage/internal/config"
 	"github.com/janekbaraniewski/openusage/internal/telemetry"
 )
 
@@ -44,6 +45,11 @@ func ingestParsedHookLocally(
 		return HookResponse{}, fmt.Errorf("open telemetry store: %w", err)
 	}
 	defer store.Close()
+	if cfg, err := config.Load(); err == nil && cfg.Telemetry.Performance.Enabled {
+		if err := store.EnablePerformance(ctx); err != nil {
+			return resp, err
+		}
+	}
 
 	pipeline := telemetry.NewPipeline(store, telemetry.NewSpool(spoolDir))
 	if spoolOnly {
