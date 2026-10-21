@@ -45,6 +45,13 @@ func Install(def Definition, dirs Dirs) (InstallResult, error) {
 	// Render template with version and binary placeholders.
 	content := strings.ReplaceAll(def.Template, "__OPENUSAGE_INTEGRATION_VERSION__", IntegrationVersion)
 	content = strings.ReplaceAll(content, "__OPENUSAGE_BIN_DEFAULT__", def.EscapeBin(dirs.OpenusageBin))
+	if def.ID == OpenCodeID {
+		var warning string
+		content, warning = renderOpenCodeContract(content, installedOpenCodeVersion())
+		if warning != "" {
+			fmt.Fprintf(os.Stderr, "warning: %s\n", warning)
+		}
+	}
 
 	// Backup existing files before overwriting.
 	if writesArtifact {

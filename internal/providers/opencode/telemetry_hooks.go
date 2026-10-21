@@ -48,6 +48,9 @@ func ParseTelemetryHookPayload(raw []byte) ([]shared.TelemetryEvent, error) {
 }
 
 func parseEventJSON(raw []byte, rawPayload map[string]any, includeUnknown bool) ([]shared.TelemetryEvent, error) {
+	if events, handled, err := parseV2TelemetryEvent(raw); handled {
+		return events, err
+	}
 	var ev eventEnvelope
 	if err := json.Unmarshal(raw, &ev); err != nil {
 		return nil, fmt.Errorf("decode opencode event: %w", err)
