@@ -268,7 +268,8 @@ func applyUsageViewToSnapshot(snap *core.UsageSnapshot, agg *telemetryUsageAgg, 
 		snap.Metrics["window_cost"] = core.Metric{Used: core.Float64Ptr(windowCost), Unit: "USD", Window: windowLabel}
 	}
 	// window_tokens represents billable token volume — input + output + cache writes
-	// + reasoning. Cache reads are excluded because they're discounted 90% and
+	// + separately reported reasoning (DSH includes it in output already).
+	// Cache reads are excluded because they're discounted 90% and
 	// represent repeated reads of cached bytes, which inflates apparent usage
 	// by orders of magnitude without reflecting actual consumption.
 	if windowBillable > 0 {
