@@ -7,10 +7,8 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -51,46 +49,21 @@ func OpenStore(path string) (*Store, error) {
 		return nil, fmt.Errorf("telemetry: creating DB dir: %w", err)
 	}
 
-	// Remove the shared-memory file before opening the database.
-	// After an unclean shutdown (SIGKILL, OOM, crash), the -shm file
-	// retains stale WAL frame indexes and lock counters from the dead
-	// process. If a new process opens the DB and trusts the stale -shm,
-	// it can misread WAL frames, causing duplicate page references and
-	// B-tree corruption. Removing the -shm forces SQLite to rebuild the
-	// WAL index from the checksummed WAL file, which is crash-safe.
-	// If another process holds the DB open, the file is still
-	// referenced via its inode and that process is unaffected.
-	_ = os.Remove(path + "-shm")
+	// SQLite coordinates WAL recovery and locking across all openers. Never
+	// unlink its sidecars or rename a database that another process may use.
 
 	db, err := openAndConfigureDB(path)
 	if err != nil {
 		return nil, err
 	}
 
-	// Quick integrity check before proceeding. If the database is corrupt
-	// (e.g. from a previous unclean shutdown that the -shm removal didn't
-	// fully recover), back it up and start fresh rather than serving bad data.
-	if corrupt, detail := quickIntegrityCheck(db); corrupt {
+	// A failed or unavailable check must preserve the store for inspection.
+	// Starting a fresh database here would silently detach existing writers
+	// from the history and can discard committed WAL data.
+	if err := quickIntegrityCheck(db); err != nil {
 		_ = db.Close()
-		backupPath := path + ".corrupt." + time.Now().Format("20060102T150405")
-		log.Printf("telemetry: database corrupt (%s), backing up to %s and starting fresh", detail, backupPath)
-		if err := os.Rename(path, backupPath); err != nil {
-			return nil, fmt.Errorf("telemetry: backup corrupt DB: %w", err)
-		}
-		_ = os.Remove(path + "-wal")
-		_ = os.Remove(path + "-shm")
-		db, err = openAndConfigureDB(path)
-		if err != nil {
-			return nil, fmt.Errorf("telemetry: opening fresh DB after corruption: %w", err)
-		}
+		return nil, err
 	}
-
-	// Reclaim disk from past corruption rotations. Each corruption event renames
-	// the DB to "<path>.corrupt.<ts>" and starts fresh; these snapshots are
-	// corrupt by definition and never read again, so they only waste disk (they
-	// have grown to multiple GB in the field). Keep the most recent one for
-	// forensics and delete the rest.
-	pruneCorruptBackups(path, 1)
 
 	store := NewStore(db)
 	if err := store.Init(context.Background()); err != nil {
@@ -98,62 +71,6 @@ func OpenStore(path string) (*Store, error) {
 		return nil, err
 	}
 	return store, nil
-}
-
-// pruneCorruptBackups removes old "<dbPath>.corrupt.*" snapshots, keeping the
-// newest `keep` by modification time. Best-effort: errors are logged but never
-// fatal. Companion -wal/-shm files for each removed snapshot are removed too.
-func pruneCorruptBackups(dbPath string, keep int) {
-	if keep < 0 {
-		keep = 0
-	}
-	matches, err := filepath.Glob(dbPath + ".corrupt.*")
-	if err != nil || len(matches) == 0 {
-		return
-	}
-	// Only consider the base snapshot files, not their -wal/-shm sidecars.
-	bases := make([]string, 0, len(matches))
-	for _, m := range matches {
-		if strings.HasSuffix(m, "-wal") || strings.HasSuffix(m, "-shm") {
-			continue
-		}
-		bases = append(bases, m)
-	}
-	if len(bases) <= keep {
-		return
-	}
-	// Sort newest-first by modtime so the first `keep` are retained.
-	type backup struct {
-		path string
-		mod  time.Time
-	}
-	infos := make([]backup, 0, len(bases))
-	for _, b := range bases {
-		fi, statErr := os.Stat(b)
-		if statErr != nil {
-			continue
-		}
-		infos = append(infos, backup{path: b, mod: fi.ModTime()})
-	}
-	sort.Slice(infos, func(i, j int) bool { return infos[i].mod.After(infos[j].mod) })
-
-	var freed int64
-	removed := 0
-	for _, b := range infos[min(keep, len(infos)):] {
-		if fi, statErr := os.Stat(b.path); statErr == nil {
-			freed += fi.Size()
-		}
-		if rmErr := os.Remove(b.path); rmErr != nil {
-			log.Printf("telemetry: could not remove stale corrupt backup %s: %v", b.path, rmErr)
-			continue
-		}
-		_ = os.Remove(b.path + "-wal")
-		_ = os.Remove(b.path + "-shm")
-		removed++
-	}
-	if removed > 0 {
-		log.Printf("telemetry: removed %d stale corrupt DB backup(s), reclaimed %d MB", removed, freed/(1024*1024))
-	}
 }
 
 func NewStore(db *sql.DB) *Store {

@@ -3,6 +3,7 @@ package telemetry
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -91,26 +92,25 @@ func openReadOnlyDB(path string) (*sql.DB, error) {
 	return db, nil
 }
 
-// quickIntegrityCheck runs PRAGMA quick_check(1) which examines the first
-// page of each B-tree. It catches the most common corruption patterns
-// (duplicate page refs, free-list errors) in O(tables) time rather than the
-// O(rows) full integrity_check. Returns (true, detail) if corruption is found.
-func quickIntegrityCheck(db *sql.DB) (corrupt bool, detail string) {
+var errIntegrityCheckFailed = errors.New("telemetry: database integrity check failed")
+
+// quickIntegrityCheck asks SQLite for at most one integrity finding. Query
+// failures retain their original cause; a busy or unreadable database is not
+// evidence of corruption. Callers must not replace the database on either error.
+func quickIntegrityCheck(db *sql.DB) error {
 	if db == nil {
-		return false, ""
+		return errors.New("telemetry: quick_check unavailable: nil database")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	var result string
 	if err := db.QueryRowContext(ctx, `PRAGMA quick_check(1);`).Scan(&result); err != nil {
-		// Transient errors (timeout, context cancellation) should not be
-		// treated as corruption — only a definitive non-"ok" result is.
-		return false, fmt.Sprintf("quick_check query error (not corruption): %v", err)
+		return fmt.Errorf("telemetry: quick_check unavailable (database preserved): %w", err)
 	}
-	if strings.TrimSpace(strings.ToLower(result)) == "ok" {
-		return false, ""
+	if strings.EqualFold(strings.TrimSpace(result), "ok") {
+		return nil
 	}
-	return true, strings.TrimSpace(result)
+	return fmt.Errorf("%w (database preserved): %s", errIntegrityCheckFailed, strings.TrimSpace(result))
 }
 
 // WALCheckpoint runs a TRUNCATE checkpoint, folding the WAL back into the
