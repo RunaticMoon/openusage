@@ -85,6 +85,7 @@ func collectTranscripts(ctx context.Context, opts shared.TelemetryCollectOptions
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 	account := opts.Path("account_id", defaultAccountID)
 	var events []shared.TelemetryEvent
+	var totalTokens int64
 	bytesRead := 0
 	for _, entry := range entries {
 		if err := ctx.Err(); err != nil {
@@ -132,6 +133,15 @@ func collectTranscripts(ctx context.Context, opts shared.TelemetryCollectOptions
 		batch, parseErr := parseTranscript(ctx, data, strings.ToLower(entry.Name()), account)
 		if parseErr != nil {
 			return nil, parseErr
+		}
+		for _, event := range batch {
+			// Each total includes all nonnegative known token buckets. Bound
+			// the whole account batch before SQLite/JSON aggregation, not just
+			// individual records; never return a partially accepted batch.
+			if totalTokens > maxTranscriptExactNumber-*event.TotalTokens {
+				return nil, transcriptError("parse_error", "transcript collection token total exceeds exact JSON numeric range")
+			}
+			totalTokens += *event.TotalTokens
 		}
 		events = append(events, batch...)
 		if len(events) > maxTranscriptEvents {
