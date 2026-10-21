@@ -21,7 +21,9 @@ and cache invalidation require the companion `fix/opencode-final-usage` patch.
 
 V2 input excludes cache, output excludes reasoning, and cache read/write are
 separate. Total is the sum of these five disjoint buckets, once each. Missing
-values remain unknown; explicit zero remains zero. Negative, fractional or
+component values remain unknown; explicit zero remains zero. As in the existing
+canonical model, a partial record has a subtotal of its known components, not
+a claim that every missing bucket is zero or that the request is complete. Negative, fractional or
 overflowing token counts fail parsing. Source `cost` is provider/API-equivalent
 usage cost and is not evidence of a subscription charge or actual invoice.
 The fork does not change global token display normalization.
