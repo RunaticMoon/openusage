@@ -66,3 +66,28 @@ The source is a complete provider snapshot rather than an incremental usage
 event adapter. No duplicate native usage events are appended to telemetry
 SQLite, so later CSV replacements also correct the next exported snapshot.
 Jev exposes no response-time data and does not estimate speed from token counts.
+
+## Persistence and observation time
+
+The daemon stores allowlisted model/day accounting in the existing latest
+`limit_snapshot` payload and restores it for a fresh dashboard or Hub request,
+including after a restart. Empty snapshots replace old detail, and corrections
+that move usage between dates or models are detected even when every total is
+unchanged. Existing retention keeps the latest payload and can reclaim older
+ones; no database migration or additional usage event stream is needed.
+
+Only exact `jev` snapshots marked `paseo-ledger-v1` use this extension. Restoration
+checks the payload's provider and account against the requested SQLite row.
+Model rows retain model ID, UTC date, tokens, requests, optional cost and partial
+coverage. Arbitrary dimensions and normalization notes are excluded. Native
+daily series preserve observed zero costs without inventing poll-date usage.
+
+The accounting extension is limited to 1 MiB of JSON, 8,192 model/day rows and
+32,768 daily points. Invalid or oversized observations produce an explicit
+`ERROR` with a diagnostic and unavailable accounting, rather than truncated
+totals. Snapshots written by a build that omitted this detail need a successful
+collector poll before accounting becomes available.
+
+Polling retains the existing change-driven persistence policy. A successful
+fetch with identical accounting does not advance the durable snapshot timestamp;
+that timestamp identifies the last stored change, not the last polling attempt.

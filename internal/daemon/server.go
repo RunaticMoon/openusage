@@ -55,6 +55,9 @@ type Service struct {
 	// state that needs to be reproducible in tests. Defaults to
 	// core.SystemClock{}; tests can override via WithClock.
 	clock core.Clock
+	// Defaults to the live configuration; tests can use explicit account
+	// visibility without reading or repairing a user's settings file.
+	readModelDisabledAccounts func() map[string]bool
 }
 
 func (s *Service) markDataIngested() {

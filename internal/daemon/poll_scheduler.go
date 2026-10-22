@@ -138,5 +138,16 @@ func hashSnapshotMetrics(snap core.UsageSnapshot) string {
 	if data, err := json.Marshal(snap.Metrics); err == nil {
 		h.Write(data)
 	}
+	// A ledger correction can move usage between days/models while retaining
+	// every total. It must still replace the persisted complete observation.
+	if snap.ProviderID == "jev" && snap.Attributes["jev_usage_source"] == "paseo-ledger-v1" {
+		if data, err := json.Marshal(struct {
+			Models   []core.ModelUsageRecord
+			Daily    map[string][]core.TimePoint
+			Identity string
+		}{snap.ModelUsage, snap.DailySeries, snap.Attributes["history_path_identity"]}); err == nil {
+			h.Write(data)
+		}
+	}
 	return string(h.Sum(nil))
 }

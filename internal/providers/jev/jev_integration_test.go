@@ -48,7 +48,10 @@ func TestNativeJevSnapshotSurvivesCanonicalReadModelAndHubJSON(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	view, err := telemetry.ApplyCanonicalTelemetryViewWithOptions(ctx, db, base, telemetry.ReadModelOptions{Now: snap.Timestamp, Since: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), TimeWindow: core.TimeWindow30d})
+	// Daemon requests start with empty templates, not the provider's fetched
+	// snapshot. Every accounting field must survive SQLite persistence first.
+	templates := map[string]core.UsageSnapshot{acct.ID: core.NewUsageSnapshot("jev", acct.ID)}
+	view, err := telemetry.ApplyCanonicalTelemetryViewWithOptions(ctx, db, templates, telemetry.ReadModelOptions{Now: snap.Timestamp, Since: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), TimeWindow: core.TimeWindow30d})
 	if err != nil {
 		t.Fatal(err)
 	}

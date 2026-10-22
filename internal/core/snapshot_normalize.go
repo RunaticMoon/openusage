@@ -28,7 +28,12 @@ func NormalizeUsageSnapshotWithConfig(s UsageSnapshot, modelCfg ModelNormalizati
 		s.ModelUsage = normalizeModelUsageRecords(s, modelCfg)
 	}
 	normalizeAnalyticsMetrics(&s)
-	normalizeAnalyticsDailySeries(&s)
+	// Jev already supplies complete UTC accounting days, including observed
+	// zero costs. Generic series normalization drops zeroes and synthesizes
+	// model totals on the poll date, which would change this ledger's meaning.
+	if s.ProviderID != "jev" || s.Attributes["jev_usage_source"] != "paseo-ledger-v1" {
+		normalizeAnalyticsDailySeries(&s)
+	}
 
 	return s
 }
