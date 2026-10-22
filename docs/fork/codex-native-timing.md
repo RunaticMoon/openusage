@@ -2,9 +2,10 @@
 
 Codex request interval metadata uses its own JSONL usage records and native
 `logs_2.sqlite`. The corrected v2 adapter leaves outcome unknown, because the
-retained completion tag also represents interrupted responses. Codex successful
-response speed therefore remains unavailable with these sources; usage still
-collects normally. See the [correction](../CODEX_LIFECYCLE_CORRECTION.md). The [adapter design](../CODEX_NATIVE_TIMING_DESIGN.md) explains
+retained completion tag also represents interrupted responses. Definition
+`log_response_throughput_v2` measures output per valid observed request interval
+without promoting unknown outcomes to success. It can include interrupted
+responses; ordinary usage collection is unchanged. See the [correction](../CODEX_LIFECYCLE_CORRECTION.md). The [adapter design](../CODEX_NATIVE_TIMING_DESIGN.md) explains
 the verified 0.163.0 producer contract, inferred boundaries and exclusions.
 There is no dependency on usage-limit, Paseo, a plugin, an OTLP collector or
 another service. Existing Codex logging is read as-is; this feature does not
@@ -108,8 +109,8 @@ isolated test Hub. Do not copy real credentials into the test setup.
 The optional `TestPerformanceRealCodexReadOnlyToHub` test requires both
 `OPENUSAGE_PERFORMANCE_REAL_CODEX_ROOT` and
 `OPENUSAGE_PERFORMANCE_REAL_CODEX_LOGS_DB`, pointing to explicitly approved
-personal source paths. It verifies stored interval metadata, unknown-outcome
-exclusions, accounting equality and snapshot transport. Set
+personal source paths. It verifies stored interval metadata, observed-throughput coverage with unknown
+outcomes preserved, accounting equality and snapshot transport. Set
 `OPENUSAGE_PERFORMANCE_REAL_CODEX_REQUIRE_INTERVAL=1` to require at least one
 accepted inferred interval. Without it, zero intervals are reported explicitly
 and are not a claim of timing support or successful-response speed. Do not widen a production account to archives to satisfy a
@@ -142,9 +143,10 @@ installation requires them. The query reads existing performance metadata; it
 does not scan or enable native logs.
 
 Inspect `inferred_log_boundary`, reported output, elapsed time, unknown outcome
-and exclusion reasons separately. Direct and successful measured counts must
-not increase from native completion tags. Explicit output zero is preserved as
-zero output, but an unknown outcome still has no successful-response speed.
+and exclusion reasons separately. Direct and successful outcome counts must
+not increase from native completion tags. Eligible native-v2 observations
+increase measured/inferred counts while remaining in the unknown count.
+Explicit output zero with valid timing is measured as 0 tok/s.
 A completed tag never proves success by itself. Retired v1 success claims are
 normalized to unknown even without source replay; no DB migration is required.
 
@@ -175,7 +177,8 @@ Useful exclusion codes distinguish different causes:
 | `ambiguous_unmapped_completion` | Another completion has unknown usage scope; later native JSONL may resolve it. |
 | `ambiguous_parallel_sampling` | A prior turn has no known closure; a later exact turn terminal can resolve this uncertainty. Age alone cannot. |
 | `ambiguous_sampling_starts`, `ambiguous_completion`, `ambiguous_overlapping_sampling`, `ambiguous_transport_retry`, `native_response_scope_conflict` | Positive conflicting evidence prevents the inferred interval. |
-| `unknown_outcome` | A usable interval exists, but success is not proven; excluded from successful speed and recent output windows. |
+| `unknown_outcome` | An unknown outcome outside the reviewed native-v2 observed-response contract; excluded from speed. Eligible native-v2 intervals no longer carry this exclusion, but remain outside successful recent-output windows. |
+| `native_request_timing_unconfirmed` | The native-v2 observation has a clock but no valid timing classification; it is not eligible for observed throughput. |
 | `invalid_duration` | The inferred interval fails the 100 ms–15 min guard. |
 
 These codes describe request evidence. They do not replace local Collector

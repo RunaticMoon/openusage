@@ -11,7 +11,7 @@ include first-token latency and is not pure generation/decode speed.
 | Source and inspected version | Identity and output | Request timing | Current behavior |
 | --- | --- | --- | --- |
 | Claude Code 2.1.304, personal macOS native JSONL | `requestId`, with native `message.id` fallback; `message.usage.output_tokens` | Exact same-file `api-request.id` → `assistant.requestRef` join; logged start/assistant timestamps | Supported **inferred log boundary**. Final stop reason and success are required for measured statistics. Missing or conflicting joins remain unmeasured. |
-| Codex 0.163.0 native JSONL + native `logs_2.sqlite` | Exact `token_usage_record.response_id` → completed log tag; **only** `usage.output_tokens` | Unique sampling-start log in the same process/thread/turn → exact completed-response tag | **Inferred interval metadata only; successful-response speed unsupported** with the reviewed retained fields. Internal Completed also covers interrupted responses, so outcome stays unknown. Version, scope, retry and lifecycle guards still apply. The `token_count` accounting stream is unchanged. See the [native timing design](CODEX_NATIVE_TIMING_DESIGN.md). |
+| Codex 0.163.0 native JSONL + native `logs_2.sqlite` | Exact `token_usage_record.response_id` → completed log tag; **only** `usage.output_tokens` | Unique sampling-start log in the same process/thread/turn → exact completed-response tag | **Observed inferred response speed** under `log_response_throughput_v2`. Internal Completed also covers interrupted responses, so outcome stays unknown while valid native-v2 intervals contribute to tok/s. Version, scope, retry and lifecycle guards still apply. The `token_count` accounting stream is unchanged. See the [native timing design](CODEX_NATIVE_TIMING_DESIGN.md). |
 | OpenCode v2.0.32 (macOS), v2.1.1 schema (Linux) | `session_message.id`, `tokens.output` | Native assistant `time.created` → `time.completed`, integer milliseconds | Supported direct provider request timestamps. A native successful finish is required. `tokens.reasoning` is separate and is never added to output. |
 | OpenCode v1 / legacy JSONL and hooks | Existing usage identity | No additional verified request-clock adapter in this change | Existing usage remains available; no fabricated performance. A v2 SQLite observation can enrich the same request later. |
 | DSH v0.2.1-rc.2, session format 4 | Existing account/session/settlement-slot identity; reported `usage.outputTokens` | One explicit `request/header` inside the same step → that attempt's single terminal stream `finish` timestamp | Supported **inferred log boundary** for this subset. Headers are conditional and consumed once; headerless calls remain unmeasured. Explicit successful finish, valid ordered stream timestamps and 100 ms–15 min duration are required. |
@@ -34,7 +34,7 @@ observations accepted by a performance adapter.
 | Emitted basis | Meaning |
 | --- | --- |
 | `claude.message.usage.output_tokens` | The raw output counter reported in the native message, unchanged. The inspected local log does not independently establish thinking-token inclusion for every configured billing route. It is **not a promise of visible-text-only output**; no separate thinking/reasoning field is added or subtracted. |
-| `codex.token_usage_record.usage.output_tokens` | The per-response reported output counter, unchanged. In Codex 0.163.0's OpenAI Responses mapping, reasoning is a detail within the reported output count, so it is not added again. Custom provider semantics are retained as reported rather than inferred from a model name. The retained native completion tag does not prove success; interval metadata alone cannot supply successful-response speed. |
+| `codex.token_usage_record.usage.output_tokens` | The per-response reported output counter, unchanged. In Codex 0.163.0's OpenAI Responses mapping, reasoning is a detail within the reported output count, so it is not added again. Custom provider semantics are retained as reported rather than inferred from a model name. The retained native completion tag does not prove success; v2 measures observed throughput without changing the unknown outcome. |
 | `opencode.tokens.output_excludes_reasoning` | The native OpenCode v2 output bucket excludes its separate reasoning bucket. Only that output bucket is the numerator, including explicit zero when reasoning is positive. |
 | `dsh.usage.outputTokens_includes_reasoning` | The native DSH output counter includes its optional reasoning detail. That detail is never added again. |
 
@@ -48,9 +48,9 @@ providers. Coverage reports retain the output-basis breakdown for inspection.
 
 ## Zero, partial, failed and corrected observations
 
-An explicit `output=0` with valid request time and successful completion is a
-measured **0 tok/s**, including OpenCode responses with positive reasoning and
-zero output. Missing output is unknown and produces a null speed. Reasoning is
+An explicit `output=0` with eligible final request timing is a measured
+**0 tok/s**, including native-v2 Codex observed responses and OpenCode responses
+with positive reasoning and zero output. Missing output is unknown and produces a null speed. Reasoning is
 never added to any source's output numerator; already-inclusive counters remain
 unchanged. Input, cache, total tokens, work and cost are never numerators.
 
@@ -85,7 +85,10 @@ unchanged. Input, cache, total tokens, work and cost are never numerators.
   limited to 100 ms–15 min. Known retries, competing starts, unsupported producer
   versions and missing/invalid evidence remain unmeasured. The source DB is read
   only when performance is enabled; it does not add another session/archive
-  scan or fall back from a custom profile to a different Codex home.
+  scan or fall back from a custom profile to a different Codex home. Only the
+  reviewed `codex_native_sqlite_v2` adapter and native per-response output basis
+  admit unknown outcomes to response-speed summaries. Unknown remains counted
+  in coverage, and these observations do not enter success-only live windows.
 - Error/aborted outcomes and partial responses do not enter successful measured
   statistics. A native timestamp alone does not prove a successful outcome.
   Unknown outcomes stay unknown even when accounting has settled.

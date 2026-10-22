@@ -8,10 +8,11 @@ timing database, OTLP receiver, plugin, new daemon or a model request.
 The measurement is **inferred log-boundary response speed**:
 `reported output_tokens * 1000 / elapsed_ms`. It includes local sampling setup
 and waiting before output. It is not direct provider timing, decode speed,
-visible-text throughput or TTFT. Missing evidence remains unmeasured. Native v2 preserves inferred intervals but
+visible-text throughput or TTFT. Missing evidence remains unmeasured.
+Definition `log_response_throughput_v2` measures reviewed native-v2 intervals and
 keeps outcome unknown: the retained metadata cannot distinguish all successful
-and interrupted responses. Consequently it does not currently publish Codex
-successful-response speed. See the [lifecycle correction](CODEX_LIFECYCLE_CORRECTION.md).
+and interrupted responses. The result is observed request throughput, not a
+success-only measurement. See the [lifecycle correction](CODEX_LIFECYCLE_CORRECTION.md).
 
 ## Audited producer contract
 

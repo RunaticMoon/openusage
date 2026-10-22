@@ -177,3 +177,23 @@ On a ChatGPT subscription plan (Plus, Pro, Team, Enterprise) the dollar number i
 
 - [OpenAI](./openai.md) — direct API rate limits for the underlying models
 - [Claude Code](./claude-code.md) — sibling local-file coding-agent provider
+
+## Response speed
+
+With optional performance collection enabled, reviewed Codex 0.163.0 records
+can supply tok/s from per-response `usage.output_tokens` and a matching inferred
+sampling-start-to-completion interval in the profile's native `logs_2.sqlite`.
+The interval includes local setup and waiting, so it is not pure decode speed.
+Reasoning detail is not added again to the reported output counter.
+
+Definition `log_response_throughput_v2` includes valid observations from the
+reviewed native-v2 adapter even when response outcome remains unknown: Codex's
+internal completion tag also represents interrupted responses. Missing clocks,
+ambiguous retries, known failures, partial responses and unsupported versions
+remain unmeasured. Existing usage totals, Work/Cached, costs and quotas are
+unchanged; no extra service or model request is required.
+
+Stored reviewed intervals are recalculated when read. Unknown outcome counts
+remain available in performance metadata, including observations that contribute
+to tok/s. Live wall-clock windows keep their separate success-only eligibility.
+No extra Codex logging is enabled and no source database is modified.

@@ -8,7 +8,7 @@ default; adding this source code does not enable it on a machine.
 
 ## Definitions
 
-For one successfully completed model request:
+For one eligible final model request:
 
 ```
 response_tok_s = output_tokens * 1000 / request_duration_ms
@@ -57,10 +57,24 @@ same-request relationship before constructing an eligible observation.
 
 Candidates are unique final model requests, including failed and unknown
 outcomes. Provisional requests are counted separately, outside that denominator.
-Only valid successful candidates contribute to `Summary.Stats`. Direct and
-inferred statistics and counts are also returned separately; combined results
-can include inferred samples only with that coverage visible. A session/turn
-aggregate is not another request and cannot double count its children.
+Definition `log_response_throughput_v2` includes valid successful candidates and
+one reviewed observed-response contract in `Summary.Stats`: Codex source
+`codex`, namespace `codex:response`, adapter `codex_native_sqlite_v2`, output
+basis `codex.token_usage_record.usage.output_tokens`, final `model_request`,
+`inferred_log_boundary`, `valid` timing and `unknown` outcome. The existing
+identity, output, matching positive start/end/duration and 100 ms–15 min guards
+all still apply. This is observed request throughput and may include interrupted
+responses; outcome is never promoted to success. Other unknown sources and
+known failures remain excluded. Retired Codex native-v1 success claims remain
+unknown and unmeasured until the reviewed adapter supplies current evidence.
+
+`Coverage.Unknown` counts unknown outcomes whether measured or excluded;
+`Measured + Excluded = Candidates`, while `Unknown` is an overlapping outcome
+count. Direct and inferred statistics remain separate, and
+`Direct + Inferred = Measured`. A session/turn aggregate is not another request
+and cannot double count its children. Live wall-clock windows retain their
+existing success-only final-request eligibility; an observed Codex request can
+contribute to historical summaries/groups without entering live buckets.
 
 The stable identity is the JSON-framed tuple `(namespace, source, account,
 native request ID)`. Mutable model, session, output, duration, path and polling
@@ -195,6 +209,12 @@ to omit it. An updated Hub preserves it in its latest-snapshot behavior. An
 unmodified v0.26.1 Hub discards unknown JSON fields when decoding/reserializing,
 so deploying only the collector does not make performance visible through that
 old Hub. No central history or Hub TTL change is introduced.
+
+V2 changes the throughput definition, not the JSON fields, histogram format or
+SQLite schema version (still 1). Existing performance-aware Hubs can forward v2
+unchanged; consumers must accept its definition before displaying it. V1 and v2
+snapshots must not be merged into one aggregate. Stored reviewed Codex intervals
+are normalized on read without rewriting source logs or accounting rows.
 
 Current adapter coverage is deliberately unequal: OpenCode's matching native
 message timestamps can be direct; uniquely matched Claude request boundaries
