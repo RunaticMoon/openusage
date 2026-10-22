@@ -59,6 +59,7 @@ func AutoDetect() Result {
 	detectMux(&result)
 	detectDroid(&result)
 	detectDSH(&result)
+	detectJev(&result)
 	detectCrush(&result)
 	detectRooCode(&result)
 	detectKiloCode(&result)

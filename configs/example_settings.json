@@ -185,6 +185,12 @@
       "provider_paths": {"sessions_dir": "~/.dsh/sessions"}
     },
     {
+      "id": "jev-personal",
+      "provider": "jev",
+      "auth": "local",
+      "provider_paths": {"usage_dir": "~/.paseo/usage-limits/jev"}
+    },
+    {
       "id": "command_code",
       "provider": "command_code",
       "api_key_env": "COMMAND_CODE_API_KEY"

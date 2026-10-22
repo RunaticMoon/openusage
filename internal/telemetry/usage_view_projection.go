@@ -331,6 +331,7 @@ func applyUsageViewToSnapshot(snap *core.UsageSnapshot, agg *telemetryUsageAgg, 
 		snap.SetAttribute("telemetry_scope_account_id", agg.AccountID)
 	}
 	snap.SetDiagnostic("telemetry_event_count", fmt.Sprintf("%d", agg.EventCount))
+	applyCodexCostView(snap, agg.CodexCosts, timeWindow)
 }
 
 func shouldRestoreRootModelBreakdown(agg *telemetryUsageAgg, modelCount int) bool {
