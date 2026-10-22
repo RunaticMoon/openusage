@@ -157,7 +157,7 @@ func (s *Service) handleReadModel(w http.ResponseWriter, r *http.Request) {
 	// empty until the next ingest event.
 	s.markDataIngested()
 	s.refreshReadModelCacheAsync(s.serviceContext(r.Context()), cacheKey, req, 60*time.Second)
-	snapshots = ReadModelTemplatesFromRequest(req, DisabledAccountsFromConfig())
+	snapshots = ReadModelTemplatesFromRequest(req, s.disabledReadModelAccounts())
 	writeJSON(w, http.StatusOK, ReadModelResponse{Snapshots: snapshots})
 	durationMs := time.Since(started).Milliseconds()
 	if durationMs >= 1200 && s.shouldLog("read_model_slow", 30*time.Second) {

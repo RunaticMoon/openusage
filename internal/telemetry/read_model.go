@@ -17,14 +17,15 @@ import (
 )
 
 type storedLimitSnapshot struct {
-	ProviderID  string                       `json:"provider_id"`
-	AccountID   string                       `json:"account_id"`
-	Status      string                       `json:"status"`
-	Message     string                       `json:"message"`
-	Metrics     map[string]storedLimitMetric `json:"metrics"`
-	Resets      map[string]string            `json:"resets"`
-	Attributes  map[string]string            `json:"attributes"`
-	Diagnostics map[string]string            `json:"diagnostics"`
+	ProviderID     string                       `json:"provider_id"`
+	AccountID      string                       `json:"account_id"`
+	Status         string                       `json:"status"`
+	Message        string                       `json:"message"`
+	Metrics        map[string]storedLimitMetric `json:"metrics"`
+	Resets         map[string]string            `json:"resets"`
+	Attributes     map[string]string            `json:"attributes"`
+	Diagnostics    map[string]string            `json:"diagnostics"`
+	JevLedgerUsage json.RawMessage              `json:"jev_ledger_usage,omitempty"`
 }
 
 // isEmpty reports whether the envelope carried no snapshot data at all, which
@@ -339,6 +340,13 @@ func decodeStoredLimitSnapshot(providerID, accountID, payload, occurredAt string
 	if envelope.Snapshot.isEmpty() {
 		return core.UsageSnapshot{}, false
 	}
+	// The accounting extension must belong to the exact provider/account row
+	// requested from SQLite. Do not broaden legacy quota hydration behavior.
+	if envelope.Snapshot.Attributes["jev_usage_source"] == jevLedgerSource &&
+		(providerID == "jev" || envelope.Snapshot.ProviderID == "jev") &&
+		(providerID != "jev" || envelope.Snapshot.ProviderID != "jev" || envelope.Snapshot.AccountID != accountID) {
+		return core.UsageSnapshot{}, false
+	}
 
 	s := core.UsageSnapshot{
 		ProviderID:  core.FirstNonEmpty(envelope.Snapshot.ProviderID, providerID),
@@ -367,6 +375,9 @@ func decodeStoredLimitSnapshot(providerID, accountID, payload, occurredAt string
 		}
 		s.Resets[key] = ts
 	}
+	if isJevLedgerSnapshot(s) {
+		restoreJevUsage(&s, envelope.Snapshot.JevLedgerUsage)
+	}
 
 	if ts, err := parseFlexibleTime(occurredAt); err == nil {
 		s.Timestamp = ts
@@ -394,6 +405,12 @@ func mergeLimitSnapshotRoot(base core.UsageSnapshot, root core.UsageSnapshot) co
 	merged.Resets = maps.Clone(root.Resets)
 	merged.Attributes = maps.Clone(root.Attributes)
 	merged.Diagnostics = maps.Clone(root.Diagnostics)
+	if isJevLedgerSnapshot(root) {
+		// A complete observation replaces even empty data, so deleted or
+		// superseded CSV records cannot survive in a previous template/cache.
+		usage := root.DeepClone()
+		merged.ModelUsage, merged.DailySeries = usage.ModelUsage, usage.DailySeries
+	}
 	if merged.Raw == nil {
 		merged.Raw = map[string]string{}
 	}

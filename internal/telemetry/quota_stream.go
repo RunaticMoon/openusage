@@ -43,6 +43,16 @@ func BuildLimitSnapshotRequests(snaps map[string]core.UsageSnapshot) []IngestReq
 	out := make([]IngestRequest, 0, len(accountIDs))
 	for _, accountID := range accountIDs {
 		snap := snaps[accountID]
+		var jevUsage any
+		if isJevLedgerSnapshot(snap) {
+			data, err := encodeJevUsage(snap)
+			if err != nil {
+				snap = snap.DeepClone()
+				rejectJevUsage(&snap, err.Error())
+				data, _ = encodeJevUsage(snap) // Persist the explicit empty error snapshot.
+			}
+			jevUsage = data
+		}
 
 		providerID := core.FirstNonEmpty(snap.ProviderID, "unknown")
 		effectiveAccountID := core.FirstNonEmpty(snap.AccountID, accountID, "default")
@@ -59,6 +69,19 @@ func BuildLimitSnapshotRequests(snaps map[string]core.UsageSnapshot) []IngestReq
 			occurredAt.Truncate(time.Second).Format(time.RFC3339),
 		)
 
+		payload := map[string]any{
+			"provider_id": providerID,
+			"account_id":  effectiveAccountID,
+			"status":      string(snap.Status),
+			"message":     snap.Message,
+			"metrics":     serializeMetrics(snap.Metrics),
+			"resets":      serializeResets(snap.Resets),
+			"attributes":  cloneStringMap(snap.Attributes),
+			"diagnostics": cloneStringMap(snap.Diagnostics),
+		}
+		if jevUsage != nil {
+			payload["jev_ledger_usage"] = jevUsage
+		}
 		out = append(out, IngestRequest{
 			SourceSystem:        SourceSystemPoller,
 			SourceChannel:       SourceChannelAPI,
@@ -71,16 +94,7 @@ func BuildLimitSnapshotRequests(snaps map[string]core.UsageSnapshot) []IngestReq
 			EventType:           EventTypeLimitSnapshot,
 			Status:              statusFromSnapshot(snap.Status),
 			Payload: map[string]any{
-				"snapshot": map[string]any{
-					"provider_id": providerID,
-					"account_id":  effectiveAccountID,
-					"status":      string(snap.Status),
-					"message":     snap.Message,
-					"metrics":     serializeMetrics(snap.Metrics),
-					"resets":      serializeResets(snap.Resets),
-					"attributes":  cloneStringMap(snap.Attributes),
-					"diagnostics": cloneStringMap(snap.Diagnostics),
-				},
+				"snapshot": payload,
 			},
 		})
 	}

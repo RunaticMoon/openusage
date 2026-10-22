@@ -13,7 +13,7 @@ func (s *Service) computeReadModel(
 	req ReadModelRequest,
 ) (map[string]core.UsageSnapshot, error) {
 	start := time.Now()
-	templates := ReadModelTemplatesFromRequest(req, DisabledAccountsFromConfig())
+	templates := ReadModelTemplatesFromRequest(req, s.disabledReadModelAccounts())
 	if len(templates) == 0 {
 		return map[string]core.UsageSnapshot{}, nil
 	}
@@ -31,6 +31,13 @@ func (s *Service) computeReadModel(
 	core.Tracef("[read_model_perf] computeReadModel TOTAL: %dms (window=%s, accounts=%d, results=%d)",
 		time.Since(start).Milliseconds(), tw, len(req.Accounts), len(result))
 	return result, err
+}
+
+func (s *Service) disabledReadModelAccounts() map[string]bool {
+	if s.readModelDisabledAccounts != nil {
+		return s.readModelDisabledAccounts()
+	}
+	return DisabledAccountsFromConfig()
 }
 
 func shouldRefreshCachedReadModel(cachedAt time.Time, cachedVersion, currentVersion uint64, now time.Time) bool {
