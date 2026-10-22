@@ -132,12 +132,38 @@ price differently, so a total alone cannot be converted to spend.
 
 ### What's NOT tracked
 
-- **Per-token spend in dollars from local sessions.** Codex sessions don't carry pricing — only token counts. The credit balance is the only $ figure, and it comes from the live endpoint.
+- **Subscription invoices from local tokens.** Local usage cannot determine the actual ChatGPT subscription charge. The cost estimate below is an API-price comparison, separate from live credit and quota observations.
 - **Hook-driven real-time events without the integration.** Install the `codex` integration (see [Daemon integrations](../daemon/integrations.md)) for per-turn events.
 
 :::note Cost values hidden by default on Plus / Pro / Team / Enterprise
 On a ChatGPT subscription plan (Plus, Pro, Team, Enterprise) the dollar number is misleading — usage is governed by rate-limit windows, not by per-call pricing. OpenUsage hides cost columns by default whenever the live `plan_type` reports a subscription tier; rate-limit windows, sessions, and tokens stay visible. Override with [`dashboard.hide_costs`](../reference/configuration.md#dashboardhide_costs) or the <kbd>c</kbd> keystroke.
 :::
+
+### Canonical daily cost estimates
+
+The fork's telemetry read model can project estimated USD costs for retained,
+deduplicated Codex events when their stored `cost_usd` is absent. It uses the
+exact model's current reference rate in the existing pricing cache, including
+context tiers and cache-read rates. Historical tokens are repriced at those
+reference rates; this does not reconstruct historical invoices. A supplied
+cost, including zero, always wins. Native Codex
+input includes cached reads; those reads are subtracted before applying the
+uncached-input rate. Reasoning tokens are already part of output and are not
+charged twice.
+
+Only records with a compatible, complete token split are eligible. Unknown
+models such as `codex-auto-review`, unsupported sources, ambiguous cache fields,
+or incomplete counters remain unpriced. Costs are calculated on read, without
+rewriting stored events or changing their identity, date, account, or tokens.
+The same projection applies to cached and uncached read-model paths and is
+exported through the existing Hub snapshot format.
+
+The snapshot marks estimates with `cost_basis=api-price-estimate`. A known cost
+subtotal retains `cost_partial=true`, daily `analytics_cost_partial`, and model
+coverage markers when unpriced records also exist. Consumers must not present
+these estimates as subscription billing or interpret missing amounts as zero.
+Replace each host's Collector through the approved deployment workflow to
+recalculate that host's retained history; the Hub needs no schema change.
 
 ### How fresh is the data?
 

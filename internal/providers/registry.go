@@ -24,6 +24,7 @@ import (
 	"github.com/janekbaraniewski/openusage/internal/providers/goose"
 	"github.com/janekbaraniewski/openusage/internal/providers/groq"
 	"github.com/janekbaraniewski/openusage/internal/providers/hermes"
+	"github.com/janekbaraniewski/openusage/internal/providers/jev"
 	"github.com/janekbaraniewski/openusage/internal/providers/kilocode"
 	"github.com/janekbaraniewski/openusage/internal/providers/kimi_cli"
 	"github.com/janekbaraniewski/openusage/internal/providers/kiro"
@@ -76,6 +77,7 @@ func AllProviders() []core.UsageProvider {
 		mux.New(),
 		droid.New(),
 		dsh.New(),
+		jev.New(),
 		crush.New(),
 		roocode.New(),
 		kilocode.New(),

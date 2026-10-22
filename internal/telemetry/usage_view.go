@@ -123,6 +123,7 @@ type telemetryCodeStatsAgg struct {
 }
 
 type telemetryUsageAgg struct {
+	CodexCosts   *codexCostView
 	LastOccurred string
 	EventCount   int64
 	Scope        string
@@ -209,6 +210,12 @@ func applyCanonicalUsageViewWithDB(
 		s := snap
 		providerID := strings.TrimSpace(s.ProviderID)
 		if providerID == "" {
+			out[accountID] = s
+			continue
+		}
+		// The Jev ledger already scopes complete usage to this host and account.
+		// Provider-linked tool telemetry must not replace that native accounting.
+		if strings.EqualFold(providerID, "jev") && s.Attributes["jev_usage_source"] == "paseo-ledger-v1" {
 			out[accountID] = s
 			continue
 		}
@@ -380,6 +387,22 @@ func loadUsageViewForProviderWithSources(ctx context.Context, db *sql.DB, cacheN
 }
 
 func loadUsageViewForFilter(ctx context.Context, db *sql.DB, cacheNamespace usageViewCacheNamespace, filter usageFilter) (*telemetryUsageAgg, error) {
+	agg, err := loadRawUsageViewForFilter(ctx, db, cacheNamespace, filter)
+	if err != nil || agg == nil || !isCodexCostFilter(filter) {
+		return agg, err
+	}
+	costs, err := queryCodexCosts(ctx, db, filter, codexCostPriceLookup)
+	if err != nil {
+		return nil, err
+	}
+	// Pricing is a read-time estimate; never change cached native aggregates or
+	// persist inferred dollars into usage_events as if they were billed amounts.
+	out := *agg
+	out.CodexCosts = costs
+	return &out, nil
+}
+
+func loadRawUsageViewForFilter(ctx context.Context, db *sql.DB, cacheNamespace usageViewCacheNamespace, filter usageFilter) (*telemetryUsageAgg, error) {
 	filterStart := time.Now()
 
 	cached, maxRowID, count, hit, cacheErr := loadUsageViewCached(ctx, db, cacheNamespace, filter)
