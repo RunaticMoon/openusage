@@ -6,8 +6,9 @@ import (
 )
 
 // PerformanceDefinitionVersion identifies output-only response speed. It does
-// not describe decode speed, first-token latency, reasoning speed or cost.
-const PerformanceDefinitionVersion = "log_response_throughput_v1"
+// not describe decode speed, first-token latency, reasoning speed or cost. V2
+// also measures reviewed Codex native request intervals with unknown outcomes.
+const PerformanceDefinitionVersion = "log_response_throughput_v2"
 
 type PerformanceTimingBasis string
 
@@ -114,7 +115,8 @@ type PerformanceStats struct {
 
 // Candidates are unique final model requests, including failed/unknown
 // outcomes. Provisional requests are outside Candidates. Measured is the
-// successful valid subset; Direct+Inferred equals Measured.
+// valid eligible subset; Direct+Inferred equals Measured. Unknown counts all
+// unknown outcomes, including measured Codex native observations in v2.
 type PerformanceCoverage struct {
 	Candidates  int64            `json:"candidates"`
 	Measured    int64            `json:"measured"`

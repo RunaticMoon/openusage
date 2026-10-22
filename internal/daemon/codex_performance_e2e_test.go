@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -122,8 +123,8 @@ func TestCodexNativePerformanceLateCompletionToHub(t *testing.T) {
 	observed := view(path, true)
 	without := view(baselinePath, false)
 	summary := observed.Performance.Summary
-	if summary.Coverage.Candidates != 1 || summary.Coverage.Measured != 0 || summary.Coverage.Unknown != 1 || summary.Coverage.Excluded != 1 || summary.Coverage.Inferred != 0 || summary.Coverage.Direct != 0 || summary.Coverage.Reasons["unknown_outcome"] != 1 || summary.Stats.Count != 0 || summary.Stats.OutputTokens != 0 || summary.Stats.DurationMS != 0 || summary.Stats.WeightedResponseTokS != nil || summary.Stats.P50TokS != nil || summary.Stats.P90TokS != nil {
-		t.Fatalf("unknown-outcome native interval entered successful statistics: %+v", summary)
+	if summary.Coverage.Candidates != 1 || summary.Coverage.Measured != 1 || summary.Coverage.Unknown != 1 || summary.Coverage.Excluded != 0 || summary.Coverage.Inferred != 1 || summary.Coverage.Direct != 0 || len(summary.Coverage.Reasons) != 0 || summary.Stats.Count != 1 || summary.Stats.OutputTokens != 3000 || summary.Stats.DurationMS != 40000 || summary.Stats.WeightedResponseTokS == nil || *summary.Stats.WeightedResponseTokS != 75 || summary.Stats.P50TokS == nil || summary.Stats.P90TokS == nil {
+		t.Fatalf("valid observed native interval was not measured: %+v", summary)
 	}
 	stored := codexPerformanceStoredRecords(t, store)
 	if len(stored) != 1 || stored[0].OutputTokens == nil || *stored[0].OutputTokens != 3000 || stored[0].DurationMS == nil || *stored[0].DurationMS != 40000 || stored[0].StartedAt == nil || !stored[0].StartedAt.Equal(start) || stored[0].EndedAt == nil || !stored[0].EndedAt.Equal(end) || stored[0].TimingBasis != core.TimingInferredLogBoundary || stored[0].Outcome != core.OutcomeUnknown || stored[0].ResponseTokS != nil || stored[0].AdapterVersion != "codex_native_sqlite_v2" {
@@ -138,10 +139,10 @@ func TestCodexNativePerformanceLateCompletionToHub(t *testing.T) {
 	}
 	remote := codexPerformancePushLatest(t, endpoint, token, account, observed)
 	if remote.Performance == nil || !performanceE2EJSONEqual(summary, remote.Performance.Summary) || remote.Performance.Summary.Coverage.Direct != 0 {
-		t.Fatal("Hub did not revoke legacy success or retain the unknown-outcome exclusion")
+		t.Fatal("Hub did not retain observed speed and unknown outcome")
 	}
-	if len(remote.Performance.Requests) != 1 || remote.Performance.Requests[0].Outcome != core.OutcomeUnknown || remote.Performance.Requests[0].ResponseTokS != nil || remote.Performance.Requests[0].OutputTokens == nil || *remote.Performance.Requests[0].OutputTokens != 3000 || remote.Performance.Requests[0].DurationMS == nil || *remote.Performance.Requests[0].DurationMS != 40000 {
-		t.Fatal("Hub lost interval metadata or retained a successful per-request speed")
+	if len(remote.Performance.Requests) != 1 || remote.Performance.Requests[0].Outcome != core.OutcomeUnknown || remote.Performance.Requests[0].ResponseTokS == nil || *remote.Performance.Requests[0].ResponseTokS != 75 || remote.Performance.Requests[0].OutputTokens == nil || *remote.Performance.Requests[0].OutputTokens != 3000 || remote.Performance.Requests[0].DurationMS == nil || *remote.Performance.Requests[0].DurationMS != 40000 {
+		t.Fatal("Hub lost observed speed or changed the unknown outcome")
 	}
 	encoded, err := json.Marshal(remote)
 	if err != nil || strings.Contains(string(encoded), "PRIVATE_CODEX_TIMING_SENTINEL") || strings.Contains(string(encoded), root) || strings.Contains(string(encoded), "last_model_response_id=") {
@@ -232,10 +233,13 @@ func TestPerformanceRealCodexReadOnlyToHub(t *testing.T) {
 		t.Fatal("real-source performance changed canonical metrics")
 	}
 	p := snaps[account].Performance
-	if p == nil || p.Summary.Coverage.Candidates == 0 || p.Summary.Coverage.Measured != 0 || p.Summary.Coverage.Inferred != 0 || p.Summary.Coverage.Direct != 0 || p.Summary.Stats.WeightedResponseTokS != nil || p.Summary.Stats.P50TokS != nil || p.Summary.Stats.P90TokS != nil || len(p.Summary.Coverage.Reasons) == 0 {
-		t.Fatal("native outcome without success evidence was measured or exclusions were lost")
+	if p == nil || p.DefinitionVersion != core.PerformanceDefinitionVersion || p.Summary.Coverage.Candidates == 0 || p.Summary.Coverage.Measured != p.Summary.Coverage.Inferred || p.Summary.Coverage.Direct != 0 || p.Summary.Coverage.Unknown != p.Summary.Coverage.Candidates {
+		t.Fatal("native observed coverage or unknown outcomes were lost")
 	}
 	intervals, intervalOutput, intervalDuration := codexPerformanceStoredIntervals(t, store)
+	if p.Summary.Coverage.Measured != int64(intervals) || (intervals > 0 && (p.Summary.Stats.WeightedResponseTokS == nil || p.Summary.Stats.OutputTokens != intervalOutput || math.Abs(p.Summary.Stats.DurationMS-intervalDuration) > 1e-6)) {
+		t.Fatal("valid stored intervals were not projected into observed speed")
+	}
 	// The configured active scope can legitimately have no retained native
 	// boundary pair. Positive-interval evidence is an explicit opt-in assertion,
 	// never a reason to widen the source scope to archived sessions.
@@ -252,7 +256,7 @@ func TestPerformanceRealCodexReadOnlyToHub(t *testing.T) {
 		t.Fatal("native metadata privacy check failed")
 	}
 	c := p.Summary.Coverage
-	t.Logf("numeric validation only: source_events=%d candidates=%d measured=%d direct=%d inferred=%d unknown=%d excluded=%d stored_intervals=%d interval_output_tokens=%d interval_duration_ms=%.3f weighted_response_tok_s=null warm_source_events=%d cold_ms=%.3f warm_ms=%.3f catchup_passes=%d catchup_collect_ms=%.3f accounting_equal=true metrics_equal=true replay_pass=true hub_snapshots=1", sourceEvents, c.Candidates, c.Measured, c.Direct, c.Inferred, c.Unknown, c.Excluded, intervals, intervalOutput, intervalDuration, warmEvents, float64(coldElapsed.Microseconds())/1000, float64(warmElapsed.Microseconds())/1000, advances, float64(catchupElapsed.Microseconds())/1000)
+	t.Logf("numeric validation only: source_events=%d candidates=%d measured=%d direct=%d inferred=%d unknown=%d excluded=%d stored_intervals=%d interval_output_tokens=%d interval_duration_ms=%.3f weighted_response_tok_s=%s warm_source_events=%d cold_ms=%.3f warm_ms=%.3f catchup_passes=%d catchup_collect_ms=%.3f accounting_equal=true metrics_equal=true replay_pass=true hub_snapshots=1", sourceEvents, c.Candidates, c.Measured, c.Direct, c.Inferred, c.Unknown, c.Excluded, intervals, intervalOutput, intervalDuration, codexPerformanceRateJSON(p.Summary.Stats.WeightedResponseTokS), warmEvents, float64(coldElapsed.Microseconds())/1000, float64(warmElapsed.Microseconds())/1000, advances, float64(catchupElapsed.Microseconds())/1000)
 }
 
 func codexPerformanceStoredRecords(t *testing.T, store *telemetry.Store) []core.PerformanceRequest {
@@ -342,4 +346,9 @@ func codexPerformancePushLatest(t *testing.T, endpoint, token, account string, s
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+func codexPerformanceRateJSON(rate *float64) string {
+	encoded, _ := json.Marshal(rate)
+	return string(encoded)
 }

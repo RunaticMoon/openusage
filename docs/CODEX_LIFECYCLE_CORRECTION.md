@@ -38,8 +38,11 @@ persists that record
 
 The corrected native reader can retain an inferred start-to-terminal interval
 when its timing guards pass. With these sources alone, the individual response
-outcome remains **unknown**. Unknown responses are excluded from the successful
-response speed average; token accounting remains intact. An eventual successful
+outcome remains **unknown**. Definition `log_response_throughput_v2` measures
+these reviewed native-v2 observations as output per inferred request time while
+retaining that outcome. They may include interrupted responses. The earlier
+success-only v1 definition excluded them; success-only live wall windows still
+do. Token accounting remains intact. An eventual successful
 turn does not retroactively make each response in it successful, and an aborted
 turn does not retroactively fail its earlier responses.
 

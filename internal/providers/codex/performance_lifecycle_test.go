@@ -156,7 +156,7 @@ func TestCodexLifecycleLatePartialTerminalRecoveryAndRestart(t *testing.T) {
 				t.Fatal("late closure did not enrich unchanged usage")
 			}
 			r := performance.NormalizeRequest(*events[0].Performance)
-			if r.DurationMS == nil || *r.DurationMS != 40000 || r.TimingStatus != core.TimingValid || r.ResponseTokS != nil || r.Outcome != core.OutcomeUnknown || !slices.Contains(r.Evidence, "codex_outcome_v2:unknown") {
+			if r.DurationMS == nil || *r.DurationMS != 40000 || r.TimingStatus != core.TimingValid || r.ResponseTokS == nil || *r.ResponseTokS != 75 || r.Outcome != core.OutcomeUnknown || !slices.Contains(r.Evidence, "codex_outcome_v2:unknown") {
 				t.Fatal("closure invented request duration or success, or failed to recover")
 			}
 			for range 10 {

@@ -138,7 +138,13 @@ func NormalizeRequest(input core.PerformanceRequest) core.PerformanceRequest {
 	if !r.Final || r.TimingStatus == core.TimingProvisional {
 		return exclude(core.TimingProvisional, "provisional")
 	}
-	if r.Outcome != core.OutcomeSuccess {
+	observedCodex := measurableCodexObservation(r)
+	if observedCodex && r.TimingStatus != core.TimingValid {
+		// A self-consistent clock is not enough to upgrade unreviewed native
+		// timing. Keep this exclusion stable when normalized again or stored.
+		return exclude(core.TimingMissing, "native_request_timing_unconfirmed")
+	}
+	if r.Outcome != core.OutcomeSuccess && !observedCodex {
 		r.TimingStatus = core.TimingValid
 		if r.Outcome == core.OutcomeFailed {
 			r.ExclusionReason = "failed_request"
@@ -153,6 +159,19 @@ func NormalizeRequest(input core.PerformanceRequest) core.PerformanceRequest {
 	}
 	r.TimingStatus, r.ResponseTokS = core.TimingValid, &rate
 	return r
+}
+
+// The reviewed native adapter associates one response's reported output with
+// one unambiguous sampling interval. Its completion tag can also represent an
+// interrupted response, so retain Unknown while measuring observed throughput.
+// All identity, finality, interval and counter checks above still apply. The
+// retired v1 adapter and other sources must not inherit this exception.
+func measurableCodexObservation(r core.PerformanceRequest) bool {
+	return r.SourceSystem == "codex" && r.Namespace == "codex:response" &&
+		r.AdapterVersion == "codex_native_sqlite_v2" &&
+		r.OutputBasis == "codex.token_usage_record.usage.output_tokens" &&
+		r.Outcome == core.OutcomeUnknown && r.Final && r.Scope == core.ScopeModelRequest &&
+		r.TimingBasis == core.TimingInferredLogBoundary
 }
 
 func sanitizeEvidence(codes []string) []string {
