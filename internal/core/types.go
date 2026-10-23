@@ -40,24 +40,25 @@ func (m Metric) Percent() float64 {
 }
 
 type TimePoint struct {
-	Date  string  `json:"date"`  // "2025-01-15"
+	Date  string  `json:"date"`  // UTC date (daily series) or RFC3339 UTC hour start (hourly series)
 	Value float64 `json:"value"` // metric value at that date
 }
 
 type UsageSnapshot struct {
-	ProviderID  string                 `json:"provider_id"`
-	AccountID   string                 `json:"account_id"`
-	Timestamp   time.Time              `json:"timestamp"`
-	Status      Status                 `json:"status"`
-	Metrics     map[string]Metric      `json:"metrics"`                // keys like "rpm", "tpm", "rpd"
-	Resets      map[string]time.Time   `json:"resets,omitempty"`       // e.g. "rpm_reset"
-	Attributes  map[string]string      `json:"attributes,omitempty"`   // normalized provider/account metadata
-	Diagnostics map[string]string      `json:"diagnostics,omitempty"`  // non-fatal errors, warnings, probe/debug notes
-	Raw         map[string]string      `json:"raw,omitempty"`          // provider metadata/debug bag (not for primary quota analytics)
-	ModelUsage  []ModelUsageRecord     `json:"model_usage,omitempty"`  // per-model usage rows with canonical IDs
-	DailySeries map[string][]TimePoint `json:"daily_series,omitempty"` // time-indexed data (e.g. "messages", "cost", "tokens_<model>")
-	Message     string                 `json:"message,omitempty"`      // human-readable summary
-	Performance *PerformanceSnapshot   `json:"performance,omitempty"`  // optional log-derived response throughput
+	ProviderID   string                 `json:"provider_id"`
+	AccountID    string                 `json:"account_id"`
+	Timestamp    time.Time              `json:"timestamp"`
+	Status       Status                 `json:"status"`
+	Metrics      map[string]Metric      `json:"metrics"`                 // keys like "rpm", "tpm", "rpd"
+	Resets       map[string]time.Time   `json:"resets,omitempty"`        // e.g. "rpm_reset"
+	Attributes   map[string]string      `json:"attributes,omitempty"`    // normalized provider/account metadata
+	Diagnostics  map[string]string      `json:"diagnostics,omitempty"`   // non-fatal errors, warnings, probe/debug notes
+	Raw          map[string]string      `json:"raw,omitempty"`           // provider metadata/debug bag (not for primary quota analytics)
+	ModelUsage   []ModelUsageRecord     `json:"model_usage,omitempty"`   // per-model usage rows with canonical IDs
+	DailySeries  map[string][]TimePoint `json:"daily_series,omitempty"`  // time-indexed data (e.g. "messages", "cost", "tokens_<model>")
+	HourlySeries map[string][]TimePoint `json:"hourly_series,omitempty"` // observed usage by UTC hour; Date is an RFC3339 bucket start
+	Message      string                 `json:"message,omitempty"`       // human-readable summary
+	Performance  *PerformanceSnapshot   `json:"performance,omitempty"`   // optional log-derived response throughput
 }
 
 func NewUsageSnapshot(providerID, accountID string) UsageSnapshot {
@@ -171,6 +172,12 @@ func (s UsageSnapshot) DeepClone() UsageSnapshot {
 			cp := make([]TimePoint, len(pts))
 			copy(cp, pts)
 			clone.DailySeries[k] = cp
+		}
+	}
+	if s.HourlySeries != nil {
+		clone.HourlySeries = make(map[string][]TimePoint, len(s.HourlySeries))
+		for key, points := range s.HourlySeries {
+			clone.HourlySeries[key] = append([]TimePoint(nil), points...)
 		}
 	}
 

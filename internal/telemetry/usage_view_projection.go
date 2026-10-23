@@ -3,12 +3,17 @@ package telemetry
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/janekbaraniewski/openusage/internal/core"
 	"github.com/samber/lo"
 )
 
 func applyUsageViewToSnapshot(snap *core.UsageSnapshot, agg *telemetryUsageAgg, timeWindow core.TimeWindow) {
+	applyUsageViewToSnapshotAt(snap, agg, timeWindow, time.Now())
+}
+
+func applyUsageViewToSnapshotAt(snap *core.UsageSnapshot, agg *telemetryUsageAgg, timeWindow core.TimeWindow, now time.Time) {
 	if snap == nil || agg == nil {
 		return
 	}
@@ -18,6 +23,9 @@ func applyUsageViewToSnapshot(snap *core.UsageSnapshot, agg *telemetryUsageAgg, 
 	if snap.DailySeries == nil {
 		snap.DailySeries = make(map[string][]core.TimePoint)
 	}
+	// Hourly usage is rebuilt from the same canonical winners as daily usage.
+	// Never spread a provider's daily total across invented intraday buckets.
+	snap.HourlySeries = make(map[string][]core.TimePoint)
 
 	savedAPIModelCosts := make(map[string]core.Metric)
 	savedRootModelMetrics := make(map[string]core.Metric)
@@ -289,6 +297,28 @@ func applyUsageViewToSnapshot(snap *core.UsageSnapshot, agg *telemetryUsageAgg, 
 	snap.DailySeries["analytics_cost"] = pointsFromDaily(agg.Daily, func(point telemetryDayPoint) float64 { return point.CostUSD })
 	snap.DailySeries["analytics_requests"] = pointsFromDaily(agg.Daily, func(point telemetryDayPoint) float64 { return point.Requests })
 	snap.DailySeries["analytics_tokens"] = pointsFromDaily(agg.Daily, func(point telemetryDayPoint) float64 { return point.Tokens })
+	hourStart, hourEnd := hourlyUsageBounds(now)
+	for _, hour := range agg.Hourly {
+		if hour.Day < hourStart || hour.Day > hourEnd {
+			continue
+		}
+		for key, value := range map[string]float64{"analytics_tokens": hour.Tokens, "analytics_requests": hour.Requests} {
+			snap.HourlySeries[key] = append(snap.HourlySeries[key], core.TimePoint{Date: hour.Day, Value: value})
+		}
+		if hour.TokenSplitSamples > 0 {
+			snap.HourlySeries["analytics_work_tokens"] = append(snap.HourlySeries["analytics_work_tokens"], core.TimePoint{Date: hour.Day, Value: hour.WorkTokens})
+			snap.HourlySeries["analytics_cached_tokens"] = append(snap.HourlySeries["analytics_cached_tokens"], core.TimePoint{Date: hour.Day, Value: hour.CachedTokens})
+		}
+		if hour.TokenSplitMissing > 0 {
+			snap.HourlySeries["analytics_token_split_partial"] = append(snap.HourlySeries["analytics_token_split_partial"], core.TimePoint{Date: hour.Day, Value: 1})
+		}
+		if hour.CostSamples > 0 {
+			snap.HourlySeries["analytics_cost"] = append(snap.HourlySeries["analytics_cost"], core.TimePoint{Date: hour.Day, Value: hour.CostUSD})
+		}
+		if hour.CostMissing > 0 {
+			snap.HourlySeries["analytics_cost_partial"] = append(snap.HourlySeries["analytics_cost_partial"], core.TimePoint{Date: hour.Day, Value: 1})
+		}
+	}
 	// Keep an absent cache observation distinct from measured zero. A mixed day
 	// exports only its measured subtotal and marks coverage explicitly.
 	for _, day := range agg.Daily {
@@ -331,7 +361,15 @@ func applyUsageViewToSnapshot(snap *core.UsageSnapshot, agg *telemetryUsageAgg, 
 		snap.SetAttribute("telemetry_scope_account_id", agg.AccountID)
 	}
 	snap.SetDiagnostic("telemetry_event_count", fmt.Sprintf("%d", agg.EventCount))
-	applyCodexCostView(snap, agg.CodexCosts, timeWindow)
+	applyCodexCostView(snap, agg.CodexCosts, timeWindow, now)
+}
+
+// Keep at most 30 UTC calendar days (720 buckets) on the wire, independently
+// of the existing daily/all-time view. Never synthesize empty hours.
+func hourlyUsageBounds(now time.Time) (string, string) {
+	now = now.UTC()
+	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, -29)
+	return start.Format(time.RFC3339), now.Truncate(time.Hour).Format(time.RFC3339)
 }
 
 func shouldRestoreRootModelBreakdown(agg *telemetryUsageAgg, modelCount int) bool {

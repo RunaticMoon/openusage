@@ -409,7 +409,7 @@ func mergeLimitSnapshotRoot(base core.UsageSnapshot, root core.UsageSnapshot) co
 		// A complete observation replaces even empty data, so deleted or
 		// superseded CSV records cannot survive in a previous template/cache.
 		usage := root.DeepClone()
-		merged.ModelUsage, merged.DailySeries = usage.ModelUsage, usage.DailySeries
+		merged.ModelUsage, merged.DailySeries, merged.HourlySeries = usage.ModelUsage, usage.DailySeries, usage.HourlySeries
 	}
 	if merged.Raw == nil {
 		merged.Raw = map[string]string{}

@@ -36,6 +36,7 @@ type usageViewEvent struct {
 	Input, Output, Reasoning, CacheRead, CacheWrite         float64
 	Total, ActivityTotal, Cost, Requests                    float64
 	TokenSplitKnown                                         bool
+	CostKnown                                               bool
 	logicalKey                                              string
 	sourcePriority, qualityScore                            int
 }
@@ -92,7 +93,8 @@ const usageViewEventSelect = `
 	       COALESCE(tool_name, ''), status, dedup_key,
 	       COALESCE(source_system, ''), COALESCE(source_channel, ''), COALESCE(source_payload, '{}'),
 	       (cache_read_tokens IS NOT NULL OR cache_write_tokens IS NOT NULL) AND
-	       (total_tokens IS NOT NULL OR (input_tokens IS NOT NULL AND output_tokens IS NOT NULL))`
+	       (total_tokens IS NOT NULL OR (input_tokens IS NOT NULL AND output_tokens IS NOT NULL)),
+	       CASE WHEN cost_usd >= 0 THEN 1 ELSE 0 END`
 
 type usageEventRowScanner interface{ Scan(...any) error }
 
@@ -104,7 +106,7 @@ func scanUsageViewEvent(row usageEventRowScanner) (usageViewEvent, error) {
 		&e.ModelRaw, &e.ModelCanonical, &e.Input, &e.Output, &e.Reasoning,
 		&e.CacheRead, &e.CacheWrite, &e.Total, &e.ActivityTotal, &e.Cost,
 		&e.Requests, &e.ToolName, &e.Status, &e.DedupKey, &e.SourceSystem,
-		&e.SourceChannel, &e.SourcePayload, &e.TokenSplitKnown,
+		&e.SourceChannel, &e.SourcePayload, &e.TokenSplitKnown, &e.CostKnown,
 	); err != nil {
 		return e, fmt.Errorf("scan incremental usage event: %w", err)
 	}
@@ -371,6 +373,7 @@ type usageAccumulator struct {
 	providers                                                                  map[string]*telemetryProviderAgg
 	languages                                                                  map[string]float64
 	daily                                                                      map[string]*telemetryDayPoint
+	hourly                                                                     map[string]*telemetryDayPoint
 	modelDaily, sourceDaily, projectDaily, mcpDaily, clientDaily, clientTokens map[string]map[string]float64
 	sourceSessions                                                             map[string]map[string]int
 	messageRefs, sessionRefs, changedFileRefs                                  map[string]int
@@ -387,6 +390,7 @@ func newUsageAccumulator(filter usageFilter) *usageAccumulator {
 		projects: make(map[string]*telemetryProjectAgg), tools: make(map[string]*telemetryToolAgg),
 		providers: make(map[string]*telemetryProviderAgg), languages: make(map[string]float64),
 		daily: make(map[string]*telemetryDayPoint), modelDaily: make(map[string]map[string]float64),
+		hourly:      make(map[string]*telemetryDayPoint),
 		sourceDaily: make(map[string]map[string]float64), projectDaily: make(map[string]map[string]float64),
 		mcpDaily: make(map[string]map[string]float64), clientDaily: make(map[string]map[string]float64),
 		clientTokens: make(map[string]map[string]float64), sourceSessions: make(map[string]map[string]int),
@@ -493,16 +497,17 @@ func (a *usageAccumulator) apply(e usageViewEvent, sign float64) {
 		}
 
 		d := ensureMapValue(a.daily, day, func() *telemetryDayPoint { return &telemetryDayPoint{Day: day} })
-		d.CostUSD += sign * e.Cost
-		d.Requests += sign * requests
-		d.Tokens += sign * e.Total
-		cached := e.CacheRead + e.CacheWrite
-		if e.TokenSplitKnown && e.Total >= cached && cached >= 0 {
-			d.WorkTokens += sign * (e.Total - cached)
-			d.CachedTokens += sign * cached
-			d.TokenSplitSamples += int(sign)
-		} else {
-			d.TokenSplitMissing += int(sign)
+		accumulateUsagePeriod(d, e, sign)
+		if hour := usageEventHour(e.OccurredAt); hour != "" {
+			h := ensureMapValue(a.hourly, hour, func() *telemetryDayPoint { return &telemetryDayPoint{Day: hour} })
+			accumulateUsagePeriod(h, e, sign)
+			if e.CostKnown {
+				h.CostSamples += int(sign)
+			} else {
+				h.CostMissing += int(sign)
+				// Preserve daily legacy totals, but do not present invalid hourly cost as observed.
+				h.CostUSD -= sign * e.Cost
+			}
 		}
 		addDaily(a.modelDaily, sanitizeMetricID(model), day, sign*requests)
 		addDaily(a.sourceDaily, sanitizeMetricID(client), day, sign*requests)
@@ -644,6 +649,12 @@ func (a *usageAccumulator) snapshot() *telemetryUsageAgg {
 		}
 	}
 	sort.Slice(agg.Daily, func(i, j int) bool { return agg.Daily[i].Day < agg.Daily[j].Day })
+	for _, v := range a.hourly {
+		if v.TokenSplitSamples+v.TokenSplitMissing > 0 {
+			agg.Hourly = append(agg.Hourly, *v)
+		}
+	}
+	sort.Slice(agg.Hourly, func(i, j int) bool { return agg.Hourly[i].Day < agg.Hourly[j].Day })
 	agg.Activity = a.activity
 	agg.CodeStats = a.codeStats
 	agg.MCPServers = buildMCPAgg(agg.Tools)
@@ -710,6 +721,28 @@ func usageEventDay(s string) string {
 		return s[:10]
 	}
 	return s
+}
+
+func usageEventHour(value string) string {
+	at, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return ""
+	}
+	return at.UTC().Truncate(time.Hour).Format(time.RFC3339)
+}
+
+func accumulateUsagePeriod(point *telemetryDayPoint, event usageViewEvent, sign float64) {
+	point.CostUSD += sign * event.Cost
+	point.Requests += sign * event.Requests
+	point.Tokens += sign * event.Total
+	cached := event.CacheRead + event.CacheWrite
+	if event.TokenSplitKnown && event.Total >= cached && cached >= 0 {
+		point.WorkTokens += sign * (event.Total - cached)
+		point.CachedTokens += sign * cached
+		point.TokenSplitSamples += int(sign)
+	} else {
+		point.TokenSplitMissing += int(sign)
+	}
 }
 
 func decodeUsagePayload(raw string) map[string]any {

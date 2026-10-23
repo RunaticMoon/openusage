@@ -38,7 +38,12 @@ Only regular `YYYY-MM-DD.jsonl` files are read. Version 1 records contain `id`,
 and excludes superseded rows across files. Conflicting duplicate IDs, invalid
 records and unsafe files produce an error rather than a partial total.
 
-Snapshots include UTC daily tokens, requests, and model/day rows. The reference
+Snapshots include UTC daily tokens, requests, and model/day rows. Optional
+`hourly_series` carries observed tokens, requests, Work and costs for the current
+UTC date and preceding 29 dates. It uses the same deduplicated and superseded
+records as the daily series; corrections replace the previous hourly detail.
+See [hourly usage history](../concepts/snapshots.md#hourly-usage-history) for the
+wire format and Hub-first rollout. The reference
 rate already verified by Paseo on 2026-09-25 is used only for the exact model
 `jev-1.13.0`: $0.042 per million input tokens, with zero output-token cost.
 These are estimates from [TypeSafe model pricing](https://docs.typesafe.ai/models),
@@ -69,10 +74,10 @@ Jev exposes no response-time data and does not estimate speed from token counts.
 
 ## Persistence and observation time
 
-The daemon stores allowlisted model/day accounting in the existing latest
+The daemon stores allowlisted model/day and hourly accounting in the existing latest
 `limit_snapshot` payload and restores it for a fresh dashboard or Hub request,
 including after a restart. Empty snapshots replace old detail, and corrections
-that move usage between dates or models are detected even when every total is
+that move usage between dates, hours or models are detected even when every total is
 unchanged. Existing retention keeps the latest payload and can reclaim older
 ones; no database migration or additional usage event stream is needed.
 
@@ -83,7 +88,7 @@ coverage. Arbitrary dimensions and normalization notes are excluded. Native
 daily series preserve observed zero costs without inventing poll-date usage.
 
 The accounting extension is limited to 1 MiB of JSON, 8,192 model/day rows and
-32,768 daily points. Invalid or oversized observations produce an explicit
+32,768 daily points and 3,600 hourly points. Invalid or oversized observations produce an explicit
 `ERROR` with a diagnostic and unavailable accounting, rather than truncated
 totals. Snapshots written by a build that omitted this detail need a successful
 collector poll before accounting becomes available.

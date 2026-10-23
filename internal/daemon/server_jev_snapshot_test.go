@@ -24,11 +24,19 @@ import (
 func TestJevLedgerDaemonPersistenceAndRemoteEnvelope(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	recentDates := strings.NewReplacer(
+		"2020-01-01", today.AddDate(0, 0, -4).Format("2006-01-02"),
+		"2020-01-02", today.AddDate(0, 0, -3).Format("2006-01-02"),
+		"2020-01-03", today.AddDate(0, 0, -2).Format("2006-01-02"),
+		"2020-01-04", today.AddDate(0, 0, -1).Format("2006-01-02"),
+	)
 	initialPath := filepath.Join(dir, "2020-01-01.jsonl")
 	initial := `{"version":1,"id":"known","timestamp":"2020-01-01T01:00:00Z","model":"jev-1.13.0","inputTokens":1000000,"outputTokens":5,"prompt":"private-canary"}` + "\n" +
 		`{"version":1,"id":"mixed","timestamp":"2020-01-01T02:00:00Z","model":"jev-future","inputTokens":7,"outputTokens":2}` + "\n" +
 		`{"version":1,"id":"unknown","timestamp":"2020-01-02T01:00:00Z","model":"jev-future","inputTokens":11,"outputTokens":2}` + "\n" +
 		`{"version":1,"id":"zero","timestamp":"2020-01-03T01:00:00Z","model":"jev-1.13.0","inputTokens":0,"outputTokens":2}` + "\n"
+	initial = recentDates.Replace(initial)
 	if err := os.WriteFile(initialPath, []byte(initial), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +49,7 @@ func TestJevLedgerDaemonPersistenceAndRemoteEnvelope(t *testing.T) {
 	}
 	defer func() { store.Close() }()
 	scheduler := newPollScheduler(time.Minute)
-	at := time.Date(2026, 10, 20, 1, 0, 0, 0, time.UTC)
+	at := time.Now().UTC().Add(-time.Minute)
 	fetchAndPersist := func(wantChanged bool) core.UsageSnapshot {
 		t.Helper()
 		snap, err := jev.New().Fetch(ctx, acct)
@@ -105,7 +113,7 @@ func TestJevLedgerDaemonPersistenceAndRemoteEnvelope(t *testing.T) {
 	}
 	assertAccounting := func(want, got core.UsageSnapshot) {
 		t.Helper()
-		if !reflect.DeepEqual(got.ModelUsage, want.ModelUsage) || !reflect.DeepEqual(got.DailySeries, want.DailySeries) || got.Status != core.StatusOK || !got.Timestamp.Equal(want.Timestamp) {
+		if !reflect.DeepEqual(got.ModelUsage, want.ModelUsage) || !reflect.DeepEqual(got.DailySeries, want.DailySeries) || !reflect.DeepEqual(got.HourlySeries, want.HourlySeries) || got.Status != core.StatusOK || !got.Timestamp.Equal(want.Timestamp) {
 			t.Fatal("daemon persistence/read-model/RemoteEnvelope lost accounting or observation timestamp")
 		}
 		for key, metric := range want.Metrics {
@@ -120,6 +128,9 @@ func TestJevLedgerDaemonPersistenceAndRemoteEnvelope(t *testing.T) {
 		}
 	}
 	first := fetchAndPersist(true)
+	if len(first.HourlySeries["analytics_tokens"]) != 4 {
+		t.Fatal("daemon fixture must exercise four observed hourly buckets")
+	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -133,6 +144,7 @@ func TestJevLedgerDaemonPersistenceAndRemoteEnvelope(t *testing.T) {
 	replacementPath := filepath.Join(dir, "2020-01-04.jsonl")
 	replacement := `{"version":1,"id":"csv-known","timestamp":"2020-01-04T01:00:00Z","model":"jev-1.13.0","inputTokens":1000000,"outputTokens":5,"source":"typesafe-console-csv","supersedes":["known"]}` + "\n" +
 		`{"version":1,"id":"csv-mixed","timestamp":"2020-01-04T02:00:00Z","model":"jev-future-v2","inputTokens":7,"outputTokens":2,"source":"typesafe-console-csv","supersedes":["mixed"]}` + "\n"
+	replacement = recentDates.Replace(replacement)
 	if err := os.WriteFile(replacementPath, []byte(replacement), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +162,7 @@ func TestJevLedgerDaemonPersistenceAndRemoteEnvelope(t *testing.T) {
 	empty := fetchAndPersist(true)
 	got := readRemote()
 	// omitempty makes an empty daily map nil after JSON; both mean no points.
-	if got.Status != core.StatusOK || len(got.ModelUsage) != 0 || len(got.DailySeries) != 0 || !got.Timestamp.Equal(empty.Timestamp) || got.Metrics["window_cost"].Used != nil || *got.Metrics["requests"].Used != 0 {
+	if got.Status != core.StatusOK || len(got.ModelUsage) != 0 || len(got.DailySeries) != 0 || len(got.HourlySeries) != 0 || !got.Timestamp.Equal(empty.Timestamp) || got.Metrics["window_cost"].Used != nil || *got.Metrics["requests"].Used != 0 {
 		t.Fatal("deleted ledger data survived the latest snapshot")
 	}
 	var limitRows, usageRows int
@@ -179,6 +191,11 @@ func TestJevLedgerHashScope(t *testing.T) {
 		second.DailySeries["analytics_tokens"] = []core.TimePoint{{Date: "2020-01-01", Value: 1}}
 		if got := hashSnapshotMetrics(first) != hashSnapshotMetrics(second); got != tc.changed {
 			t.Fatalf("hash scope %s/%s changed=%t", tc.provider, tc.marker, got)
+		}
+		second = first.DeepClone()
+		second.HourlySeries = map[string][]core.TimePoint{"analytics_tokens": {{Date: "2020-01-01T01:00:00Z", Value: 1}}}
+		if got := hashSnapshotMetrics(first) != hashSnapshotMetrics(second); got != tc.changed {
+			t.Fatalf("hourly hash scope %s/%s changed=%t", tc.provider, tc.marker, got)
 		}
 	}
 }

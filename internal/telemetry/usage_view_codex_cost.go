@@ -40,6 +40,7 @@ func (a *codexCostAmount) add(cost *float64, estimated bool) {
 type codexCostView struct {
 	Total, Today codexCostAmount
 	Days         map[string]*codexCostAmount
+	Hours        map[string]*codexCostAmount
 	Models       map[string]*codexCostAmount
 }
 
@@ -55,7 +56,7 @@ func isCodexCostFilter(filter usageFilter) bool {
 // native usage view. Original NULL/zero values remain distinguishable here.
 func queryCodexCosts(ctx context.Context, db *sql.DB, filter usageFilter, lookup codexPriceLookup) (*codexCostView, error) {
 	cte, args := dedupedUsageCTE(filter)
-	query := cte + fmt.Sprintf(`SELECT date(occurred_at),
+	query := cte + fmt.Sprintf(`SELECT date(occurred_at), strftime('%%Y-%%m-%%dT%%H:00:00Z', occurred_at),
 		COALESCE(NULLIF(TRIM(COALESCE(model_canonical, model_raw)), ''), 'unknown'),
 		input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, total_tokens, cost_usd, source_system,
 		CASE WHEN %s THEN 1 ELSE 0 END
@@ -65,14 +66,14 @@ func queryCodexCosts(ctx context.Context, db *sql.DB, filter usageFilter, lookup
 		return nil, fmt.Errorf("codex cost view: %w", err)
 	}
 	defer rows.Close()
-	view := &codexCostView{Days: make(map[string]*codexCostAmount), Models: make(map[string]*codexCostAmount)}
+	view := &codexCostView{Days: make(map[string]*codexCostAmount), Hours: make(map[string]*codexCostAmount), Models: make(map[string]*codexCostAmount)}
 	priceCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	for rows.Next() {
-		var day, model, source string
+		var day, hour, model, source string
 		var input, output, cached, writes, total, observed sql.NullFloat64
 		var today bool
-		if err := rows.Scan(&day, &model, &input, &output, &cached, &writes, &total, &observed, &source, &today); err != nil {
+		if err := rows.Scan(&day, &hour, &model, &input, &output, &cached, &writes, &total, &observed, &source, &today); err != nil {
 			return nil, fmt.Errorf("scan codex cost view: %w", err)
 		}
 		var cost *float64
@@ -89,8 +90,12 @@ func queryCodexCosts(ctx context.Context, db *sql.DB, filter usageFilter, lookup
 		if view.Models[model] == nil {
 			view.Models[model] = &codexCostAmount{}
 		}
+		if view.Hours[hour] == nil {
+			view.Hours[hour] = &codexCostAmount{}
+		}
 		view.Total.add(cost, estimated)
 		view.Days[day].add(cost, estimated)
+		view.Hours[hour].add(cost, estimated)
 		view.Models[model].add(cost, estimated)
 		if today {
 			view.Today.add(cost, estimated)
@@ -145,7 +150,7 @@ func estimateCodexViewCost(ctx context.Context, lookup codexPriceLookup, model s
 	return core.Float64Ptr(amount)
 }
 
-func applyCodexCostView(snap *core.UsageSnapshot, view *codexCostView, window core.TimeWindow) {
+func applyCodexCostView(snap *core.UsageSnapshot, view *codexCostView, window core.TimeWindow, now time.Time) {
 	if view == nil || !strings.EqualFold(snap.ProviderID, "codex") {
 		return
 	}
@@ -158,6 +163,7 @@ func applyCodexCostView(snap *core.UsageSnapshot, view *codexCostView, window co
 	}
 	for _, key := range []string{"analytics_cost", "cost", "cost_usd", "analytics_cost_partial"} {
 		delete(snap.DailySeries, key)
+		delete(snap.HourlySeries, key)
 	}
 	for _, key := range []string{"cost_basis", "cost_partial"} {
 		delete(snap.Attributes, key)
@@ -207,6 +213,24 @@ func applyCodexCostView(snap *core.UsageSnapshot, view *codexCostView, window co
 		}
 		if amount.Missing > 0 {
 			snap.DailySeries["analytics_cost_partial"] = append(snap.DailySeries["analytics_cost_partial"], core.TimePoint{Date: day, Value: 1})
+		}
+	}
+	hours := make([]string, 0, len(view.Hours))
+	for hour := range view.Hours {
+		hours = append(hours, hour)
+	}
+	sort.Strings(hours)
+	start, end := hourlyUsageBounds(now)
+	for _, hour := range hours {
+		if hour < start || hour > end {
+			continue
+		}
+		amount := view.Hours[hour]
+		if amount.Known > 0 {
+			snap.HourlySeries["analytics_cost"] = append(snap.HourlySeries["analytics_cost"], core.TimePoint{Date: hour, Value: amount.USD})
+		}
+		if amount.Missing > 0 {
+			snap.HourlySeries["analytics_cost_partial"] = append(snap.HourlySeries["analytics_cost_partial"], core.TimePoint{Date: hour, Value: 1})
 		}
 	}
 }

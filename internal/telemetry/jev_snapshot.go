@@ -11,26 +11,28 @@ import (
 )
 
 const (
-	jevLedgerSource   = "paseo-ledger-v1"
-	maxJevUsageBytes  = 1 << 20
-	maxJevModelRows   = 8192
-	maxJevDailyPoints = 32768
+	jevLedgerSource    = "paseo-ledger-v1"
+	maxJevUsageBytes   = 1 << 20
+	maxJevModelRows    = 8192
+	maxJevDailyPoints  = 32768
+	maxJevHourlyPoints = 30 * 24 * 5
 )
 
 // Only this audited, complete accounting snapshot is persisted. In particular,
 // arbitrary ModelUsage dimensions, normalization reasons and Raw are excluded.
 type storedJevUsage struct {
-	Version     int                         `json:"version"`
-	ModelUsage  []core.ModelUsageRecord     `json:"model_usage"`
-	DailySeries map[string][]core.TimePoint `json:"daily_series"`
+	Version      int                         `json:"version"`
+	ModelUsage   []core.ModelUsageRecord     `json:"model_usage"`
+	DailySeries  map[string][]core.TimePoint `json:"daily_series"`
+	HourlySeries map[string][]core.TimePoint `json:"hourly_series,omitempty"`
 }
 
 func isJevLedgerSnapshot(s core.UsageSnapshot) bool {
 	return s.ProviderID == "jev" && s.Attributes["jev_usage_source"] == jevLedgerSource
 }
 
-func sanitizeJevUsage(models []core.ModelUsageRecord, daily map[string][]core.TimePoint) (storedJevUsage, error) {
-	out := storedJevUsage{Version: 1, DailySeries: make(map[string][]core.TimePoint)}
+func sanitizeJevUsage(models []core.ModelUsageRecord, daily, hourly map[string][]core.TimePoint) (storedJevUsage, error) {
+	out := storedJevUsage{Version: 1, DailySeries: make(map[string][]core.TimePoint), HourlySeries: make(map[string][]core.TimePoint)}
 	if len(models) > maxJevModelRows {
 		return out, fmt.Errorf("model row limit exceeded")
 	}
@@ -70,6 +72,23 @@ func sanitizeJevUsage(models []core.ModelUsageRecord, daily map[string][]core.Ti
 		}
 		out.DailySeries[key] = append([]core.TimePoint(nil), series...)
 	}
+	points = 0
+	for _, key := range []string{"analytics_tokens", "analytics_requests", "analytics_work_tokens", "analytics_cost", "analytics_cost_partial"} {
+		series, ok := hourly[key]
+		if !ok {
+			continue
+		}
+		points += len(series)
+		if points > maxJevHourlyPoints {
+			return out, fmt.Errorf("hourly point limit exceeded")
+		}
+		for _, point := range series {
+			if !validJevHour(point.Date) || !validJevNumber(point.Value) {
+				return out, fmt.Errorf("invalid hourly accounting value")
+			}
+		}
+		out.HourlySeries[key] = append([]core.TimePoint(nil), series...)
+	}
 	return out, nil
 }
 
@@ -78,12 +97,17 @@ func validJevDay(day string) bool {
 	return err == nil && len(day) == 10
 }
 
+func validJevHour(hour string) bool {
+	at, err := time.Parse(time.RFC3339, hour)
+	return err == nil && at.UTC().Truncate(time.Hour).Format(time.RFC3339) == hour
+}
+
 func validJevNumber(n float64) bool {
 	return n >= 0 && !math.IsNaN(n) && !math.IsInf(n, 0)
 }
 
 func encodeJevUsage(s core.UsageSnapshot) (json.RawMessage, error) {
-	usage, err := sanitizeJevUsage(s.ModelUsage, s.DailySeries)
+	usage, err := sanitizeJevUsage(s.ModelUsage, s.DailySeries, s.HourlySeries)
 	if err != nil {
 		return nil, err
 	}
@@ -108,12 +132,12 @@ func restoreJevUsage(s *core.UsageSnapshot, data json.RawMessage) {
 		rejectJevUsage(s, "Invalid accounting payload")
 		return
 	}
-	clean, err := sanitizeJevUsage(usage.ModelUsage, usage.DailySeries)
+	clean, err := sanitizeJevUsage(usage.ModelUsage, usage.DailySeries, usage.HourlySeries)
 	if err != nil {
 		rejectJevUsage(s, "Invalid accounting payload")
 		return
 	}
-	s.ModelUsage, s.DailySeries = clean.ModelUsage, clean.DailySeries
+	s.ModelUsage, s.DailySeries, s.HourlySeries = clean.ModelUsage, clean.DailySeries, clean.HourlySeries
 }
 
 func rejectJevUsage(s *core.UsageSnapshot, reason string) {
@@ -127,4 +151,5 @@ func rejectJevUsage(s *core.UsageSnapshot, reason string) {
 	s.SetAttribute("cost_partial", "true")
 	s.ModelUsage = nil
 	s.DailySeries = make(map[string][]core.TimePoint)
+	s.HourlySeries = make(map[string][]core.TimePoint)
 }

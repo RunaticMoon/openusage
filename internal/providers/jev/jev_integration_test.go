@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,6 +19,8 @@ func TestNativeJevSnapshotSurvivesCanonicalReadModelAndHubJSON(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	data := `{"version":1,"id":"known","timestamp":"2026-10-20T23:00:00Z","model":"jev-1.13.0","inputTokens":1000000,"outputTokens":5}` + "\n" + `{"version":1,"id":"unknown-mixed","timestamp":"2026-10-20T23:01:00Z","model":"jev-future","inputTokens":7,"outputTokens":2}` + "\n" + `{"version":1,"id":"unknown","timestamp":"2026-10-21T00:00:00Z","model":"jev-future","inputTokens":11,"outputTokens":2}` + "\n"
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	data = strings.NewReplacer("2026-10-20", today.AddDate(0, 0, -2).Format("2006-01-02"), "2026-10-21", today.AddDate(0, 0, -1).Format("2006-01-02")).Replace(data)
 	if err := os.WriteFile(filepath.Join(dir, "2026-10-20.jsonl"), []byte(data), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -51,12 +54,12 @@ func TestNativeJevSnapshotSurvivesCanonicalReadModelAndHubJSON(t *testing.T) {
 	// Daemon requests start with empty templates, not the provider's fetched
 	// snapshot. Every accounting field must survive SQLite persistence first.
 	templates := map[string]core.UsageSnapshot{acct.ID: core.NewUsageSnapshot("jev", acct.ID)}
-	view, err := telemetry.ApplyCanonicalTelemetryViewWithOptions(ctx, db, templates, telemetry.ReadModelOptions{Now: snap.Timestamp, Since: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), TimeWindow: core.TimeWindow30d})
+	view, err := telemetry.ApplyCanonicalTelemetryViewWithOptions(ctx, db, templates, telemetry.ReadModelOptions{Now: snap.Timestamp, Since: today.AddDate(0, 0, -29), TimeWindow: core.TimeWindow30d})
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := view[acct.ID]
-	if !reflect.DeepEqual(got.ModelUsage, snap.ModelUsage) || !reflect.DeepEqual(got.DailySeries, snap.DailySeries) {
+	if !reflect.DeepEqual(got.ModelUsage, snap.ModelUsage) || !reflect.DeepEqual(got.DailySeries, snap.DailySeries) || !reflect.DeepEqual(got.HourlySeries, snap.HourlySeries) {
 		t.Fatal("native model/day accounting was replaced by poller events")
 	}
 	if metric := got.Metrics["window_cost"]; metric.Used == nil || *metric.Used != 0.042 || got.Attributes["cost_partial"] != "true" {
@@ -69,6 +72,9 @@ func TestNativeJevSnapshotSurvivesCanonicalReadModelAndHubJSON(t *testing.T) {
 	var wire core.UsageSnapshot
 	if err := json.Unmarshal(encoded, &wire); err != nil {
 		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(wire.HourlySeries, snap.HourlySeries) || len(wire.HourlySeries["analytics_tokens"]) != 2 {
+		t.Fatal("Hub serialization lost observed hourly accounting")
 	}
 	if wire.ModelUsage[1].CostUSD != nil || wire.ModelUsage[1].Dimensions["cost_partial"] != "true" || len(wire.DailySeries["analytics_cost"]) != 1 || len(wire.DailySeries["analytics_cost_partial"]) != 2 || wire.Attributes["history_path_identity"] != snap.Attributes["history_path_identity"] || wire.Attributes["cost_basis"] != "provider-reference-estimate" || wire.Attributes["cost_partial"] != "true" {
 		t.Fatal("Hub serialization changed unknown cost or source identity")

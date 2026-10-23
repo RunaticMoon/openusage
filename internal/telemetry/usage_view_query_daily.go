@@ -10,7 +10,22 @@ import (
 )
 
 func queryDailyTotals(ctx context.Context, db *sql.DB, filter usageFilter) ([]telemetryDayPoint, error) {
+	return queryUsagePeriodTotals(ctx, db, filter, false)
+}
+
+func queryHourlyTotals(ctx context.Context, db *sql.DB, filter usageFilter) ([]telemetryDayPoint, error) {
+	return queryUsagePeriodTotals(ctx, db, filter, true)
+}
+
+func queryUsagePeriodTotals(ctx context.Context, db *sql.DB, filter usageFilter, hourly bool) ([]telemetryDayPoint, error) {
 	usageCTE, whereArgs := dedupedUsageCTE(filter)
+	bucket, costs, costSamples, costMissing := "date(occurred_at)", "SUM(COALESCE(cost_usd, 0))", "0", "0"
+	if hourly {
+		bucket = "strftime('%Y-%m-%dT%H:00:00Z', occurred_at)"
+		costs = "SUM(CASE WHEN cost_usd >= 0 THEN cost_usd ELSE 0 END)"
+		costSamples = "SUM(CASE WHEN cost_usd >= 0 THEN 1 ELSE 0 END)"
+		costMissing = "SUM(CASE WHEN cost_usd >= 0 THEN 0 ELSE 1 END)"
+	}
 	total := `COALESCE(total_tokens, COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0) +
 		COALESCE(reasoning_tokens, 0) + COALESCE(cache_read_tokens, 0) + COALESCE(cache_write_tokens, 0))`
 	cached := `(COALESCE(cache_read_tokens, 0) + COALESCE(cache_write_tokens, 0))`
@@ -20,21 +35,22 @@ func queryDailyTotals(ctx context.Context, db *sql.DB, filter usageFilter) ([]te
 	dailyTimeFilter := ""
 	query := usageCTE + fmt.Sprintf(`
 		SELECT
-			date(occurred_at) AS day,
-			SUM(COALESCE(cost_usd, 0)) AS cost_usd,
+			%s AS day,
+			%s AS cost_usd,
 			SUM(COALESCE(requests, 1)) AS requests,
 			SUM(%s) AS tokens,
 			SUM(CASE WHEN %s THEN %s - %s ELSE 0 END) AS work_tokens,
 			SUM(CASE WHEN %s THEN %s ELSE 0 END) AS cached_tokens,
 			SUM(CASE WHEN %s THEN 1 ELSE 0 END) AS split_samples,
-			SUM(CASE WHEN %s THEN 0 ELSE 1 END) AS split_missing
+			SUM(CASE WHEN %s THEN 0 ELSE 1 END) AS split_missing,
+			%s AS cost_samples, %s AS cost_missing
 		FROM deduped_usage
 		WHERE 1=1
 		  AND event_type = 'message_usage'
 		  AND status != 'error'%s
 		GROUP BY day
 		ORDER BY day ASC
-	`, total, known, total, cached, known, cached, known, known, dailyTimeFilter)
+	`, bucket, costs, total, known, total, cached, known, cached, known, known, costSamples, costMissing, dailyTimeFilter)
 	rows, err := db.QueryContext(ctx, query, whereArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("canonical usage daily query: %w", err)
@@ -45,7 +61,7 @@ func queryDailyTotals(ctx context.Context, db *sql.DB, filter usageFilter) ([]te
 	for rows.Next() {
 		var row telemetryDayPoint
 		if err := rows.Scan(&row.Day, &row.CostUSD, &row.Requests, &row.Tokens,
-			&row.WorkTokens, &row.CachedTokens, &row.TokenSplitSamples, &row.TokenSplitMissing); err != nil {
+			&row.WorkTokens, &row.CachedTokens, &row.TokenSplitSamples, &row.TokenSplitMissing, &row.CostSamples, &row.CostMissing); err != nil {
 			return nil, fmt.Errorf("scan canonical usage daily row: %w", err)
 		}
 		out = append(out, row)

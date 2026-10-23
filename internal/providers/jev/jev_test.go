@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/janekbaraniewski/openusage/internal/core"
 )
@@ -23,7 +24,7 @@ func fetch(t *testing.T, root string) core.UsageSnapshot {
 	t.Helper()
 	acct := core.AccountConfig{ID: "m1-jev-personal", Provider: ID}
 	acct.SetPath("usage_dir", root)
-	snap, err := New().Fetch(context.Background(), acct)
+	snap, err := New().fetchAt(context.Background(), acct, time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,6 +58,12 @@ func TestSnapshotDailyUsageRatesPrivacyAndPathIdentity(t *testing.T) {
 	if len(snap.DailySeries["analytics_tokens"]) != 2 {
 		t.Fatal("daily tokens lost")
 	}
+	if points := snap.HourlySeries["analytics_tokens"]; len(points) != 2 || points[0].Date != "2026-10-20T23:00:00Z" || points[0].Value != 1000020 || points[1].Date != "2026-10-21T01:00:00Z" || points[1].Value != 10 {
+		t.Fatalf("hourly observations lost or redistributed: %+v", points)
+	}
+	if _, ok := snap.HourlySeries["analytics_cached_tokens"]; ok {
+		t.Fatal("unobserved cache usage was fabricated")
+	}
 	digest := sha256.Sum256([]byte("jev-records\x00" + root))
 	if snap.Attributes["history_path_identity"] != "jev-records:sha256:"+hex.EncodeToString(digest[:]) {
 		t.Fatal("history identity mismatch")
@@ -88,6 +95,12 @@ func TestMixedAndUnknownDailyCostCoverage(t *testing.T) {
 	if points := snap.DailySeries["analytics_cost_partial"]; len(points) != 2 || points[0].Date != "2026-10-20" || points[1].Date != "2026-10-21" || points[0].Value != 1 || points[1].Value != 1 {
 		t.Fatalf("incomplete day coverage lost: %+v", points)
 	}
+	if points := snap.HourlySeries["analytics_cost"]; len(points) != 1 || points[0].Date != "2026-10-20T23:00:00Z" || points[0].Value != 0.042 {
+		t.Fatalf("hourly unknown cost fabricated or known subtotal lost: %+v", points)
+	}
+	if points := snap.HourlySeries["analytics_cost_partial"]; len(points) != 2 || points[0].Date != "2026-10-20T23:00:00Z" || points[1].Date != "2026-10-21T00:00:00Z" || points[0].Value != 1 || points[1].Value != 1 {
+		t.Fatalf("hourly incomplete cost coverage lost: %+v", points)
+	}
 	for _, row := range snap.ModelUsage {
 		if row.RawModelID == "jev-future" && (row.CostUSD != nil || row.Dimensions["cost_partial"] != "true") {
 			t.Fatal("unknown model cost became zero or lost its missing-price marker")
@@ -105,11 +118,14 @@ func TestUnknownOnlyAndKnownZeroCostRemainDistinct(t *testing.T) {
 			writeRows(t, root, "2026-10-20.jsonl", `{"version":1,"id":"zero-input","timestamp":"2026-10-20T00:00:00Z","model":"`+model+`","inputTokens":0,"outputTokens":30}`)
 			snap := fetch(t, root)
 			if model == "jev-future" {
-				if snap.Metrics["window_cost"].Used != nil || snap.ModelUsage[0].CostUSD != nil || len(snap.DailySeries["analytics_cost"]) != 0 || snap.Attributes["cost_partial"] != "true" {
+				if snap.Metrics["window_cost"].Used != nil || snap.ModelUsage[0].CostUSD != nil || len(snap.DailySeries["analytics_cost"]) != 0 || len(snap.HourlySeries["analytics_cost"]) != 0 || snap.Attributes["cost_partial"] != "true" {
 					t.Fatal("unknown-only usage received a fabricated zero cost")
 				}
 			} else if snap.Metrics["window_cost"].Used == nil || *snap.Metrics["window_cost"].Used != 0 || snap.ModelUsage[0].CostUSD == nil || *snap.ModelUsage[0].CostUSD != 0 || len(snap.DailySeries["analytics_cost"]) != 1 || snap.Attributes["cost_partial"] != "" {
 				t.Fatal("known zero cost did not remain a complete observation")
+			}
+			if model == "jev-1.13.0" && (len(snap.HourlySeries["analytics_cost"]) != 1 || snap.HourlySeries["analytics_cost"][0].Value != 0) {
+				t.Fatal("known zero hourly cost was dropped")
 			}
 		})
 	}
@@ -122,16 +138,42 @@ func TestCSVReplacesPriorNativeSnapshotAcrossFiles(t *testing.T) {
 	if *first.Metrics["window_cost"].Used != 0.042 {
 		t.Fatal("initial cost absent")
 	}
-	writeRows(t, root, "2026-10-21.jsonl", `{"version":1,"id":"csv-1","timestamp":"2026-10-20T23:00:00Z","model":"jev-1.13.0","inputTokens":500000,"outputTokens":10,"requests":4,"source":"typesafe-console-csv","supersedes":["native-1"]}`)
+	writeRows(t, root, "2026-10-21.jsonl", `{"version":1,"id":"csv-1","timestamp":"2026-10-21T07:45:00+09:00","model":"jev-1.13.0","inputTokens":500000,"outputTokens":10,"requests":4,"source":"typesafe-console-csv","supersedes":["native-1"]}`)
 	second := fetch(t, root)
 	if *second.Metrics["requests"].Used != 4 || *second.Metrics["window_cost"].Used != 0.021 || len(second.ModelUsage) != 1 {
 		t.Fatal("CSV replacement added to obsolete native usage")
+	}
+	if points := second.HourlySeries["analytics_tokens"]; len(points) != 1 || points[0].Date != "2026-10-20T22:00:00Z" || points[0].Value != 500010 {
+		t.Fatalf("CSV replacement retained obsolete hour or ignored source timezone: %+v", points)
 	}
 	third := fetch(t, root)
 	a, _ := json.Marshal(second.ModelUsage)
 	b, _ := json.Marshal(third.ModelUsage)
 	if string(a) != string(b) {
 		t.Fatal("poll replay changed usage")
+	}
+}
+
+func TestHourlyHistoryIsBoundedWithoutDiscardingDailyHistory(t *testing.T) {
+	root := t.TempDir()
+	writeRows(t, root, "2026-09-21.jsonl",
+		`{"version":1,"id":"older","timestamp":"2026-09-21T23:59:59Z","model":"jev-1.13.0","inputTokens":2,"outputTokens":1}`,
+		`{"version":1,"id":"first-hour","timestamp":"2026-09-22T00:00:00Z","model":"jev-1.13.0","inputTokens":3,"outputTokens":1}`,
+		`{"version":1,"id":"current-hour","timestamp":"2026-10-21T12:01:00Z","model":"jev-1.13.0","inputTokens":4,"outputTokens":1}`,
+		`{"version":1,"id":"future-current-hour","timestamp":"2026-10-21T12:04:00Z","model":"jev-1.13.0","inputTokens":999,"outputTokens":1}`,
+		`{"version":1,"id":"future-hour","timestamp":"2026-10-21T13:00:00Z","model":"jev-1.13.0","inputTokens":999,"outputTokens":1}`)
+	acct := core.AccountConfig{ID: "bounded", Provider: ID}
+	acct.SetPath("usage_dir", root)
+	snap, err := New().fetchAt(context.Background(), acct, time.Date(2026, 10, 21, 12, 3, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.DailySeries["analytics_tokens"]) != 3 || *snap.Metrics["total_tokens"].Used != 12 {
+		t.Fatal("hourly bound changed historical daily totals or accepted a future observation")
+	}
+	points := snap.HourlySeries["analytics_tokens"]
+	if len(points) != 2 || points[0].Date != "2026-09-22T00:00:00Z" || points[0].Value != 4 || points[1].Date != "2026-10-21T12:00:00Z" || points[1].Value != 5 {
+		t.Fatalf("hourly boundary or observations changed: %+v", points)
 	}
 }
 

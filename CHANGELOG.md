@@ -6,6 +6,12 @@
 - Persist verified unchanged Claude, Codex, OpenCode and DSH observations so successful revalidation advances the durable snapshot time without adding token usage events.
 - Preserve the original Claude quota observation time and value on authentication/API failure cache fallback, including after a reset boundary. Existing snapshot JSON and Hub contracts are unchanged.
 
+## 2026-10-24 (fork)
+
+- Export optional `hourly_series` for canonical token totals, requests, Work/Cached and cost using UTC hour starts. Preserve known zero, missing and partial values; bound hourly export to the current UTC date and preceding 29 dates.
+- Rebuild hourly observations from retained canonical events without a SQLite migration. Preserve Codex request-level pricing and Jev ledger corrections through persistence, export and Hub transport.
+- Update the Hub before collectors to retain the new optional field. Daily series remain compatible with older consumers; older Hubs omit hourly series.
+
 ## 2026-10-22 (fork)
 
 - Preserve Jev model/day accounting through normalization, SQLite persistence and fresh daemon/Hub reads, including known zero costs, unknown-cost coverage and equal-total CSV corrections.
