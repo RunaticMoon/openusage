@@ -68,6 +68,12 @@ func loadMaterializedUsageAgg(ctx context.Context, db *sql.DB, filter usageFilte
 	if err != nil {
 		return err
 	}
+	done = trace("queryHourlyTotals")
+	hourly, err := queryHourlyTotals(ctx, db, filter)
+	done()
+	if err != nil {
+		return err
+	}
 	done = trace("queryDailyByDimension(model)")
 	modelDaily, err := queryDailyByDimension(ctx, db, filter, "model")
 	done()
@@ -115,6 +121,7 @@ func loadMaterializedUsageAgg(ctx context.Context, db *sql.DB, filter usageFilte
 	agg.Activity = activity
 	agg.CodeStats = codeStats
 	agg.Daily = daily
+	agg.Hourly = hourly
 	agg.ModelDaily = modelDaily
 	agg.SourceDaily = sourceDaily
 	agg.ProjectDaily = projectDaily

@@ -98,6 +98,8 @@ type telemetryDayPoint struct {
 	CachedTokens      float64
 	TokenSplitSamples int
 	TokenSplitMissing int
+	CostSamples       int // Hourly coverage only; legacy daily cost semantics stay unchanged.
+	CostMissing       int
 }
 
 type telemetryActivityAgg struct {
@@ -138,6 +140,7 @@ type telemetryUsageAgg struct {
 	Activity     telemetryActivityAgg
 	CodeStats    telemetryCodeStatsAgg
 	Daily        []telemetryDayPoint
+	Hourly       []telemetryDayPoint
 	ModelDaily   map[string][]core.TimePoint
 	SourceDaily  map[string][]core.TimePoint
 	ProjectDaily map[string][]core.TimePoint

@@ -144,8 +144,9 @@ func hashSnapshotMetrics(snap core.UsageSnapshot) string {
 		if data, err := json.Marshal(struct {
 			Models   []core.ModelUsageRecord
 			Daily    map[string][]core.TimePoint
+			Hourly   map[string][]core.TimePoint
 			Identity string
-		}{snap.ModelUsage, snap.DailySeries, snap.Attributes["history_path_identity"]}); err == nil {
+		}{snap.ModelUsage, snap.DailySeries, snap.HourlySeries, snap.Attributes["history_path_identity"]}); err == nil {
 			h.Write(data)
 		}
 	}

@@ -87,6 +87,9 @@ func TestUsageSnapshotDeepClone(t *testing.T) {
 		DailySeries: map[string][]TimePoint{
 			"cost": {{Date: "2025-01-01", Value: 1.5}},
 		},
+		HourlySeries: map[string][]TimePoint{
+			"analytics_tokens": {{Date: "2025-01-01T01:00:00Z", Value: 50}},
+		},
 	}
 
 	clone := original.DeepClone()
@@ -99,6 +102,8 @@ func TestUsageSnapshotDeepClone(t *testing.T) {
 	clone.Raw["debug"] = "mutated"
 	clone.DailySeries["cost"][0].Value = 999
 	clone.DailySeries["new_series"] = []TimePoint{{Date: "2025-02-01", Value: 2}}
+	clone.HourlySeries["analytics_tokens"][0].Value = 999
+	clone.HourlySeries["new_series"] = []TimePoint{{Date: "2025-01-01T02:00:00Z", Value: 2}}
 
 	// Verify original is unchanged
 	if len(original.Metrics) != 2 {
@@ -124,6 +129,9 @@ func TestUsageSnapshotDeepClone(t *testing.T) {
 	}
 	if _, ok := original.DailySeries["new_series"]; ok {
 		t.Fatal("original should not have new_series")
+	}
+	if original.HourlySeries["analytics_tokens"][0].Value != 50 || len(original.HourlySeries) != 1 {
+		t.Fatal("cloned hourly series aliases original")
 	}
 }
 

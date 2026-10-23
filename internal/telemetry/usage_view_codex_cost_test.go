@@ -57,7 +57,7 @@ func TestCodexCostViewPreservesDatesCoverageAndNativeCosts(t *testing.T) {
 			}
 			snap := core.NewUsageSnapshot("codex", "one")
 			snap.Metrics["window_cost"] = core.Metric{Used: float64Ptr(900), Unit: "USD", Window: "today"}
-			applyUsageViewToSnapshot(&snap, agg, core.TimeWindow30d)
+			applyUsageViewToSnapshotAt(&snap, agg, core.TimeWindow30d, base.AddDate(0, 0, 3))
 			if got := snap.Metrics["window_cost"]; got.Used == nil || math.Abs(*got.Used-want) > 1e-12 || got.Window != "30d" {
 				t.Fatalf("window cost = %+v, want %v in 30d", got, want)
 			}
@@ -76,6 +76,12 @@ func TestCodexCostViewPreservesDatesCoverageAndNativeCosts(t *testing.T) {
 			}
 			if len(snap.DailySeries["analytics_cost_partial"]) != 2 {
 				t.Fatalf("missing daily coverage: %+v", snap.DailySeries)
+			}
+			if points := snap.HourlySeries["analytics_cost"]; len(points) != 2 || points[0].Date != "2026-10-20T12:00:00Z" || points[0].Value != want || points[1].Value != 0 {
+				t.Fatalf("hourly native/estimated cost = %+v", points)
+			}
+			if len(snap.HourlySeries["analytics_cost_partial"]) != 2 {
+				t.Fatalf("missing hourly coverage: %+v", snap.HourlySeries)
 			}
 			for _, row := range snap.ModelUsage {
 				if row.RawModelID == "codex-auto-review" && (row.CostUSD == nil || *row.CostUSD != 0 || row.Dimensions["cost_partial"] != "true") {

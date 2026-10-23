@@ -53,6 +53,37 @@ the updated daemon rebuilds the series from retained usage events, including
 existing history; no database migration is required. Older snapshots without
 these keys remain valid, but cannot supply daily Work/Cached curves.
 
+### Hourly usage history
+
+Snapshots may also contain `hourly_series`, a separate optional map with the same
+point shape as `daily_series`. Its `date` is a UTC hour start in RFC3339 format
+(for example, `2026-10-24T03:00:00Z`). It contains actual observed events, never
+fractions of daily totals.
+
+| Key | Value |
+|---|---|
+| `analytics_tokens` | Deduplicated total tokens |
+| `analytics_requests` | Observed usage requests |
+| `analytics_work_tokens` | Total tokens minus cache reads and writes |
+| `analytics_cached_tokens` | Cache reads plus writes |
+| `analytics_token_split_partial` | `1` when only some events have a known token split |
+| `analytics_cost` | Known observed or provider-estimated cost subtotal |
+| `analytics_cost_partial` | `1` when some events have no known cost |
+
+A known zero remains zero. An hour with no known costs has no cost point; missing
+cost does not mean free usage. Codex uses the same request-level price estimates
+as its daily series, and Jev preserves its ledger's known, unknown and corrected
+observations. Hours are bounded to today and the preceding 29 UTC dates, through
+the current hour. Canonical telemetry also applies its selected time window;
+Jev exports its recent ledger hours for consumers to filter.
+
+Restarting an updated collector rebuilds hourly values from retained usage
+events. No schema migration or history reset is required. Update the **Hub first**,
+then update each collector: an older Hub drops this unknown optional field.
+Older collectors and daily-only providers remain valid but cannot supply hourly
+curves. Consumers can combine hours into larger intervals, retaining missing and
+partial coverage; they must not invent hours from daily totals.
+
 ### Rate limits
 
 Providers may expose any combination of:

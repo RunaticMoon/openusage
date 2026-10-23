@@ -54,7 +54,12 @@ func DefaultUsageDir() string {
 // stale costs in an incremental event store. The daemon exports this snapshot
 // through its normal provider-poll/read-model/Hub path.
 func (p *Provider) Fetch(ctx context.Context, acct core.AccountConfig) (core.UsageSnapshot, error) {
+	return p.fetchAt(ctx, acct, time.Now())
+}
+
+func (p *Provider) fetchAt(ctx context.Context, acct core.AccountConfig, now time.Time) (core.UsageSnapshot, error) {
 	snap := core.NewUsageSnapshot(ID, acct.ID)
+	snap.Timestamp = now
 	root, err := filepath.Abs(shared.ExpandHome(acct.Path("usage_dir", DefaultUsageDir())))
 	if err != nil {
 		return snap, fmt.Errorf("jev: invalid usage directory")
@@ -71,8 +76,8 @@ func (p *Provider) Fetch(ctx context.Context, acct core.AccountConfig) (core.Usa
 	snap.SetAttribute("cost_basis", "provider-reference-estimate")
 	snap.SetAttribute("cost_rate_verified", "2026-09-25")
 	snap.SetAttribute("cost_rate_source", "https://docs.typesafe.ai/models")
-	snap.DailySeries = make(map[string][]core.TimePoint)
-	models, days := map[string]*aggregate{}, map[string]*aggregate{}
+	models, days, hours := map[string]*aggregate{}, map[string]*aggregate{}, map[string]*aggregate{}
+	hourlySince := snap.Timestamp.UTC().Truncate(24*time.Hour).AddDate(0, 0, -29)
 	total := newAggregate()
 	var latest time.Time
 	for _, row := range rows {
@@ -80,6 +85,7 @@ func (p *Provider) Fetch(ctx context.Context, acct core.AccountConfig) (core.Usa
 			continue
 		}
 		day := row.at.UTC().Format("2006-01-02")
+		hour := row.at.UTC().Truncate(time.Hour).Format(time.RFC3339)
 		key := day + "\x00" + row.Model
 		if models[key] == nil {
 			models[key] = newAggregate()
@@ -87,7 +93,14 @@ func (p *Provider) Fetch(ctx context.Context, acct core.AccountConfig) (core.Usa
 		if days[day] == nil {
 			days[day] = newAggregate()
 		}
-		for _, bucket := range []*aggregate{models[key], days[day], total} {
+		buckets := []*aggregate{models[key], days[day], total}
+		if !row.at.Before(hourlySince) {
+			if hours[hour] == nil {
+				hours[hour] = newAggregate()
+			}
+			buckets = append(buckets, hours[hour])
+		}
+		for _, bucket := range buckets {
 			if err := bucket.add(row); err != nil {
 				return core.UsageSnapshot{}, err
 			}
@@ -110,18 +123,8 @@ func (p *Provider) Fetch(ctx context.Context, acct core.AccountConfig) (core.Usa
 			TotalTokens: core.Float64Ptr(float64(value.input + value.output)), Requests: core.Float64Ptr(float64(value.requests)), CostUSD: value.cost,
 		})
 	}
-	for _, day := range sortedKeys(days) {
-		value := days[day]
-		for key, n := range map[string]int64{"analytics_tokens": value.input + value.output, "analytics_requests": value.requests, "analytics_work_tokens": value.input + value.output} {
-			snap.DailySeries[key] = append(snap.DailySeries[key], core.TimePoint{Date: day, Value: float64(n)})
-		}
-		if value.cost != nil {
-			snap.DailySeries["analytics_cost"] = append(snap.DailySeries["analytics_cost"], core.TimePoint{Date: day, Value: *value.cost})
-		}
-		if value.unpriced > 0 {
-			snap.DailySeries["analytics_cost_partial"] = append(snap.DailySeries["analytics_cost_partial"], core.TimePoint{Date: day, Value: 1})
-		}
-	}
+	snap.DailySeries = aggregateSeries(days)
+	snap.HourlySeries = aggregateSeries(hours)
 	for key, n := range map[string]int64{"input_tokens": total.input, "output_tokens": total.output, "total_tokens": total.input + total.output, "requests": total.requests} {
 		unit := "tokens"
 		if key == "requests" {
@@ -142,6 +145,23 @@ func (p *Provider) Fetch(ctx context.Context, acct core.AccountConfig) (core.Usa
 	snap.Status = core.StatusOK
 	snap.Message = "Host-local Jev metadata; costs are reference estimates, not an account balance"
 	return snap, nil
+}
+
+func aggregateSeries(buckets map[string]*aggregate) map[string][]core.TimePoint {
+	series := make(map[string][]core.TimePoint)
+	for _, date := range sortedKeys(buckets) {
+		value := buckets[date]
+		for key, n := range map[string]int64{"analytics_tokens": value.input + value.output, "analytics_requests": value.requests, "analytics_work_tokens": value.input + value.output} {
+			series[key] = append(series[key], core.TimePoint{Date: date, Value: float64(n)})
+		}
+		if value.cost != nil {
+			series["analytics_cost"] = append(series["analytics_cost"], core.TimePoint{Date: date, Value: *value.cost})
+		}
+		if value.unpriced > 0 {
+			series["analytics_cost_partial"] = append(series["analytics_cost_partial"], core.TimePoint{Date: date, Value: 1})
+		}
+	}
+	return series
 }
 
 type aggregate struct {

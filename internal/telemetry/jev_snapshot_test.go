@@ -23,6 +23,7 @@ func jevAccountingSnapshot() core.UsageSnapshot {
 		Dimensions: map[string]string{"date": "2026-10-19"}, InputTokens: core.Float64Ptr(0),
 		OutputTokens: core.Float64Ptr(2), TotalTokens: core.Float64Ptr(2), Requests: core.Float64Ptr(1), CostUSD: core.Float64Ptr(0)}}
 	s.DailySeries = map[string][]core.TimePoint{"analytics_tokens": {{Date: "2026-10-19", Value: 2}}, "analytics_cost": {{Date: "2026-10-19", Value: 0}}}
+	s.HourlySeries = map[string][]core.TimePoint{"analytics_tokens": {{Date: "2026-10-19T23:00:00Z", Value: 2}}, "analytics_cost": {{Date: "2026-10-19T23:00:00Z", Value: 0}}}
 	return s
 }
 
@@ -46,12 +47,13 @@ func TestJevSnapshotPersistenceAllowlistAndScope(t *testing.T) {
 	input.ModelUsage[0].Dimensions["prompt"] = "private-canary"
 	input.ModelUsage[0].Window = "private-canary"
 	input.DailySeries["private-canary"] = []core.TimePoint{{Date: "bad", Value: 1}}
+	input.HourlySeries["private-canary"] = []core.TimePoint{{Date: "bad", Value: 1}}
 	payload := snapshotPayload(t, input)
 	if strings.Contains(payload, "private-canary") {
 		t.Fatal("non-accounting metadata persisted")
 	}
 	got, ok := decodeStoredLimitSnapshot("jev", want.AccountID, payload, want.Timestamp.Format(time.RFC3339))
-	if !ok || !reflect.DeepEqual(got.ModelUsage, want.ModelUsage) || !reflect.DeepEqual(got.DailySeries, want.DailySeries) {
+	if !ok || !reflect.DeepEqual(got.ModelUsage, want.ModelUsage) || !reflect.DeepEqual(got.DailySeries, want.DailySeries) || !reflect.DeepEqual(got.HourlySeries, want.HourlySeries) {
 		t.Fatal("accounting values or known zero changed")
 	}
 	for _, tc := range []struct{ provider, marker string }{{"codex", jevLedgerSource}, {"jev", ""}, {"jev", "other"}, {"Jev", jevLedgerSource}} {
@@ -89,6 +91,12 @@ func TestJevSnapshotRejectsInvalidOrOversizedAccounting(t *testing.T) {
 		{"nan", func(s *core.UsageSnapshot) { s.ModelUsage[0].CostUSD = core.Float64Ptr(math.NaN()) }},
 		{"negative", func(s *core.UsageSnapshot) { s.DailySeries["analytics_tokens"][0].Value = -1 }},
 		{"invalid date", func(s *core.UsageSnapshot) { s.ModelUsage[0].Dimensions["date"] = "2026-02-30" }},
+		{"invalid hour", func(s *core.UsageSnapshot) { s.HourlySeries["analytics_tokens"][0].Date = "2026-10-19T23:01:00Z" }},
+		{"non-UTC hour", func(s *core.UsageSnapshot) { s.HourlySeries["analytics_tokens"][0].Date = "2026-10-20T08:00:00+09:00" }},
+		{"negative hourly value", func(s *core.UsageSnapshot) { s.HourlySeries["analytics_tokens"][0].Value = -1 }},
+		{"hourly point limit", func(s *core.UsageSnapshot) {
+			s.HourlySeries["analytics_tokens"] = make([]core.TimePoint, maxJevHourlyPoints+1)
+		}},
 		{"row limit", func(s *core.UsageSnapshot) { s.ModelUsage = make([]core.ModelUsageRecord, maxJevModelRows+1) }},
 		{"point limit", func(s *core.UsageSnapshot) {
 			s.DailySeries["analytics_tokens"] = make([]core.TimePoint, maxJevDailyPoints+1)
@@ -108,7 +116,7 @@ func TestJevSnapshotRejectsInvalidOrOversizedAccounting(t *testing.T) {
 			tc.change(&s)
 			payload := snapshotPayload(t, s)
 			got, ok := decodeStoredLimitSnapshot("jev", s.AccountID, payload, s.Timestamp.Format(time.RFC3339))
-			if !ok || got.Status != core.StatusError || got.Diagnostics["jev_usage_snapshot"] == "" || len(got.ModelUsage) != 0 || len(got.DailySeries) != 0 || len(got.Metrics) != 0 {
+			if !ok || got.Status != core.StatusError || got.Diagnostics["jev_usage_snapshot"] == "" || len(got.ModelUsage) != 0 || len(got.DailySeries) != 0 || len(got.HourlySeries) != 0 || len(got.Metrics) != 0 {
 				t.Fatal("invalid accounting was represented as complete")
 			}
 			if s.Status != core.StatusOK || s.Metrics["window_cost"].Used == nil {
@@ -119,9 +127,28 @@ func TestJevSnapshotRejectsInvalidOrOversizedAccounting(t *testing.T) {
 	for _, data := range []string{"", `{}`, `{"version":2}`, strings.Repeat(" ", maxJevUsageBytes+1)} {
 		s := jevAccountingSnapshot()
 		restoreJevUsage(&s, json.RawMessage(data))
-		if s.Status != core.StatusError || len(s.ModelUsage) != 0 || len(s.DailySeries) != 0 || s.Metrics["window_cost"].Used != nil {
+		if s.Status != core.StatusError || len(s.ModelUsage) != 0 || len(s.DailySeries) != 0 || len(s.HourlySeries) != 0 || s.Metrics["window_cost"].Used != nil {
 			t.Fatal("invalid stored payload retained prior usage")
 		}
+	}
+}
+
+func TestJevLegacySnapshotHasNoInventedHourlyHistory(t *testing.T) {
+	s := jevAccountingSnapshot()
+	legacy, err := sanitizeJevUsage(s.ModelUsage, s.DailySeries, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "hourly_series") {
+		t.Fatal("legacy payload fixture unexpectedly has hourly data")
+	}
+	restoreJevUsage(&s, data)
+	if s.Status != core.StatusOK || len(s.DailySeries["analytics_tokens"]) != 1 || len(s.HourlySeries) != 0 {
+		t.Fatal("legacy accounting failed to load or retained an unrelated hourly template")
 	}
 }
 
@@ -150,6 +177,7 @@ func TestJevSnapshotLatestEmptyReplacementSurvivesRetention(t *testing.T) {
 	empty := initial.DeepClone()
 	empty.Timestamp = empty.Timestamp.Add(time.Second)
 	empty.ModelUsage, empty.DailySeries = nil, map[string][]core.TimePoint{}
+	empty.HourlySeries = map[string][]core.TimePoint{}
 	if err := ingest.Ingest(ctx, map[string]core.UsageSnapshot{empty.AccountID: empty}); err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +190,7 @@ func TestJevSnapshotLatestEmptyReplacementSurvivesRetention(t *testing.T) {
 		t.Fatal("empty replacement unavailable")
 	}
 	got := mergeLimitSnapshotRoot(initial, *root)
-	if got.Status != core.StatusOK || len(got.ModelUsage) != 0 || len(got.DailySeries) != 0 || !got.Timestamp.Equal(empty.Timestamp) {
+	if got.Status != core.StatusOK || len(got.ModelUsage) != 0 || len(got.DailySeries) != 0 || len(got.HourlySeries) != 0 || !got.Timestamp.Equal(empty.Timestamp) {
 		t.Fatal("older accounting survived complete replacement")
 	}
 	// The generic quota path must continue to preserve another provider's
