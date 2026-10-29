@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -250,10 +251,43 @@ func fetchUsageAPIWithAuth(ctx context.Context, url string, setAuth func(*http.R
 // variable rather than a constant so tests can point it at an httptest server.
 var oauthUsageURL = "https://api.anthropic.com/api/oauth/usage"
 
+// claudeCodeKeychainService is the Keychain item Claude Code uses on macOS
+// for its default config directory. It holds the same JSON document that
+// other platforms write to ~/.claude/.credentials.json.
+const claudeCodeKeychainService = "Claude Code-credentials"
+
+// readClaudeCodeKeychainCredentials returns the Claude Code credential JSON
+// from the macOS Keychain. It is a package variable so tests can replace the
+// Keychain without touching the real one.
+var readClaudeCodeKeychainCredentials = func() ([]byte, error) {
+	if runtime.GOOS != "darwin" {
+		return nil, fmt.Errorf("keychain lookup only supported on macOS")
+	}
+	current, err := user.Current()
+	if err != nil {
+		return nil, fmt.Errorf("resolving keychain account: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	// Claude Code stores the item under the macOS username; query it
+	// explicitly so a same-service item for another account cannot win.
+	out, err := exec.CommandContext(ctx, "security", "find-generic-password",
+		"-s", claudeCodeKeychainService, "-a", current.Username, "-w").Output()
+	if err != nil {
+		if keychainItemNotFound(err) {
+			return nil, fmt.Errorf("keychain item %q not found", claudeCodeKeychainService)
+		}
+		// Never include stdout: on partial success it could hold the secret.
+		return nil, fmt.Errorf("keychain lookup for %q failed", claudeCodeKeychainService)
+	}
+	return out, nil
+}
+
 // readClaudeCodeOAuthToken loads the Claude Code CLI's OAuth access token from
-// ~/.claude/.credentials.json. It errors if the file is missing, the token is
-// absent, or the token has already expired (Claude Code refreshes it on next
-// use, so a stale value would only produce 401s).
+// ~/.claude/.credentials.json and, when that yields no usable token, from the
+// macOS Keychain item Claude Code uses instead of the file on macOS. It errors
+// if no source holds a token or every token has already expired (Claude Code
+// refreshes it on next use, so a stale value would only produce 401s).
 func readClaudeCodeOAuthToken() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -261,26 +295,56 @@ func readClaudeCodeOAuthToken() (string, error) {
 	}
 
 	credsPath := filepath.Join(home, ".claude", ".credentials.json")
-	credsData, err := os.ReadFile(credsPath)
-	if err != nil {
-		return "", fmt.Errorf("reading Claude Code credentials: %w", err)
+	credsData, fileErr := os.ReadFile(credsPath)
+	if fileErr == nil {
+		var token string
+		token, fileErr = parseClaudeCodeOAuthToken(credsData, credsPath)
+		if fileErr == nil {
+			return token, nil
+		}
+	} else {
+		fileErr = fmt.Errorf("reading Claude Code credentials: %w", fileErr)
 	}
 
+	keychainData, keychainErr := readClaudeCodeKeychainCredentials()
+	if keychainErr == nil {
+		token, err := parseClaudeCodeOAuthToken(keychainData, "keychain "+claudeCodeKeychainService)
+		if err == nil {
+			return token, nil
+		}
+		keychainErr = err
+	}
+	return "", fmt.Errorf("%w; %v", fileErr, keychainErr)
+}
+
+// parseClaudeCodeOAuthToken extracts an unexpired access token from a Claude
+// Code credential document. place names the source in errors; the token
+// itself never appears in one.
+func parseClaudeCodeOAuthToken(data []byte, place string) (string, error) {
 	var creds struct {
 		ClaudeAiOauth struct {
 			AccessToken string `json:"accessToken"`
 			ExpiresAt   int64  `json:"expiresAt"`
 		} `json:"claudeAiOauth"`
 	}
-	if err := json.Unmarshal(credsData, &creds); err != nil {
-		return "", fmt.Errorf("parsing Claude Code credentials: %w", err)
+	if err := json.Unmarshal(data, &creds); err != nil {
+		return "", fmt.Errorf("parsing Claude Code credentials in %s: %v", place, safeJSONError(err))
 	}
-	token := creds.ClaudeAiOauth.AccessToken
+	token := strings.TrimSpace(creds.ClaudeAiOauth.AccessToken)
 	if token == "" {
-		return "", fmt.Errorf("no OAuth access token in %s", credsPath)
+		return "", fmt.Errorf("no OAuth access token in %s", place)
 	}
 	if exp := creds.ClaudeAiOauth.ExpiresAt; exp > 0 && time.Now().UnixMilli() >= exp {
-		return "", fmt.Errorf("Claude Code OAuth token expired (refreshed on next Claude Code use)")
+		return "", fmt.Errorf("Claude Code OAuth token in %s expired (refreshed on next Claude Code use)", place)
 	}
 	return token, nil
+}
+
+// safeJSONError drops json.Unmarshal details that can quote input bytes.
+func safeJSONError(err error) string {
+	var syntaxErr *json.SyntaxError
+	if errors.As(err, &syntaxErr) {
+		return fmt.Sprintf("invalid JSON at offset %d", syntaxErr.Offset)
+	}
+	return "unexpected credential structure"
 }

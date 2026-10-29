@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Read the Claude Code OAuth token from the macOS Keychain item `Claude Code-credentials` when `~/.claude/.credentials.json` is missing, signed out or expired, so macOS collectors report 5h/7d Claude quotas. Errors name the sources tried and never include token values. No snapshot, SQLite or Hub change.
 - Keep authenticated Claude subscription quotas polling when local session files are unchanged, under the existing adaptive polling schedule.
 - Persist verified unchanged Claude, Codex, OpenCode and DSH observations so successful revalidation advances the durable snapshot time without adding token usage events.
 - Preserve the original Claude quota observation time and value on authentication/API failure cache fallback, including after a reset boundary. Existing snapshot JSON and Hub contracts are unchanged.
