@@ -102,6 +102,82 @@ func TestReadClaudeCodeOAuthToken_MissingFile(t *testing.T) {
 	}
 }
 
+// stubKeychain replaces the Keychain reader for one test.
+func stubKeychain(t *testing.T, body string, err error) *int {
+	t.Helper()
+	calls := 0
+	previous := readClaudeCodeKeychainCredentials
+	readClaudeCodeKeychainCredentials = func() ([]byte, error) {
+		calls++
+		if err != nil {
+			return nil, err
+		}
+		return []byte(body), nil
+	}
+	t.Cleanup(func() { readClaudeCodeKeychainCredentials = previous })
+	return &calls
+}
+
+func TestReadClaudeCodeOAuthToken_KeychainFallback(t *testing.T) {
+	future := strconv.FormatInt(time.Now().Add(time.Hour).UnixMilli(), 10)
+	past := strconv.FormatInt(time.Now().Add(-time.Hour).UnixMilli(), 10)
+	keychainBody := `{"claudeAiOauth":{"accessToken":"kc-tok","expiresAt":` + future + `}}`
+
+	t.Run("missing file uses keychain", func(t *testing.T) {
+		setTempHome(t)
+		stubKeychain(t, keychainBody, nil)
+		got, err := readClaudeCodeOAuthToken()
+		if err != nil || got != "kc-tok" {
+			t.Fatalf("token = %q, err = %v; want keychain token", got, err)
+		}
+	})
+
+	t.Run("signed-out file uses keychain", func(t *testing.T) {
+		writeCredentials(t, `{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0}}`)
+		stubKeychain(t, keychainBody, nil)
+		got, err := readClaudeCodeOAuthToken()
+		if err != nil || got != "kc-tok" {
+			t.Fatalf("token = %q, err = %v; want keychain token", got, err)
+		}
+	})
+
+	t.Run("valid file wins without keychain lookup", func(t *testing.T) {
+		writeCredentials(t, `{"claudeAiOauth":{"accessToken":"file-tok","expiresAt":`+future+`}}`)
+		calls := stubKeychain(t, keychainBody, nil)
+		got, err := readClaudeCodeOAuthToken()
+		if err != nil || got != "file-tok" {
+			t.Fatalf("token = %q, err = %v; want file token", got, err)
+		}
+		if *calls != 0 {
+			t.Fatalf("keychain calls = %d, want 0", *calls)
+		}
+	})
+
+	t.Run("expired keychain token rejected", func(t *testing.T) {
+		setTempHome(t)
+		stubKeychain(t, `{"claudeAiOauth":{"accessToken":"kc-tok","expiresAt":`+past+`}}`, nil)
+		if got, err := readClaudeCodeOAuthToken(); err == nil {
+			t.Fatalf("expected error, got token %q", got)
+		}
+	})
+
+	t.Run("errors name both sources without secrets", func(t *testing.T) {
+		writeCredentials(t, `{"claudeAiOauth":{"accessToken":"file-secret","expiresAt":`+past+`}}`)
+		stubKeychain(t, `{"claudeAiOauth":{"accessToken":"kc-secret","expiresAt":"bad"}}`, nil)
+		_, err := readClaudeCodeOAuthToken()
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		msg := err.Error()
+		if !strings.Contains(msg, ".credentials.json") || !strings.Contains(msg, "keychain") {
+			t.Fatalf("error should name both sources, got %q", msg)
+		}
+		if strings.Contains(msg, "secret") {
+			t.Fatalf("error leaked a token: %q", msg)
+		}
+	})
+}
+
 func TestFetchUsageAPIWithAuth_OAuth(t *testing.T) {
 	var gotAuth, gotBeta string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -17,6 +17,11 @@ func TestMain(m *testing.M) {
 	priceLookup = func(_ context.Context, _ string, _ int) (*pricing.Price, error) {
 		return nil, errors.New("pricing disabled in tests")
 	}
+	// Never read the developer's real Keychain; tests that cover it install
+	// their own stub.
+	readClaudeCodeKeychainCredentials = func() ([]byte, error) {
+		return nil, errors.New("keychain disabled in tests")
+	}
 	os.Exit(m.Run())
 }
 

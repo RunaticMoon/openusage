@@ -31,6 +31,8 @@ identity. None of these rows implies merge approval or production installation.
 
 | Hourly usage history | Export actual UTC hourly token, request, split and cost observations for adaptive multi-host charts. [Fields and rollout](../site/docs/concepts/snapshots.md#hourly-usage-history). | `feat/hourly-usage-history-20261024`; the reviewed PR HEAD and native artifact metadata identify this patch. | Canonical SQL/incremental parity, dedup/revisions, missing/zero/partial cost, Codex pricing, Jev persistence and Exporter/Hub transport regressions. Additive `hourly_series`; Hub-first rollout, no SQLite migration or implied deployment. |
 
+| Claude Code Keychain OAuth | Report 5h/7d Claude quotas from macOS collectors, where Claude Code stores its OAuth credential in the Keychain instead of `~/.claude/.credentials.json`. [Provider contract](../site/docs/providers/claude-code.md#5h--7d-utilization-gauge-usage_five_hour-usage_seven_day). | `fix/claude-keychain-oauth-20261029`; the reviewed PR HEAD and native artifact metadata identify this patch. | File-first precedence, signed-out/missing-file fallback, expired-token rejection, secret-free errors; tests stub the Keychain. Read-only `security` lookup for the default service and current user; no credential writes, wire/schema change or implied deployment. |
+
 Any later integration corrections must be added with their actual commit/PR
 and JSON compatibility evidence when ready. Do not mark a planned field as
 already delivered. Native CI links
