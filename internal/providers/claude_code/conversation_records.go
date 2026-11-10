@@ -1,15 +1,15 @@
 package claude_code
 
 import (
-	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
-	"os"
 	"reflect"
 	"strings"
 	"time"
 
 	"github.com/janekbaraniewski/openusage/internal/core"
+	"github.com/janekbaraniewski/openusage/internal/providers/shared"
 )
 
 type conversationRecord struct {
@@ -28,28 +28,28 @@ type conversationRecord struct {
 	performance *core.PerformanceRequest
 }
 
-func parseConversationRecords(path string) []conversationRecord {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil
-	}
-	defer f.Close()
+var assistantToken = []byte(`"assistant"`)
 
+func parseConversationRecords(path string) []conversationRecord {
 	// Resolve the agent label once per file. Detection touches sidecar
 	// metadata and (optionally) the parent transcript, so we want to amortise
 	// the I/O across every record in the file.
 	agentLabel := detectAgentType(path)
 
+	// Same line splitting as the incremental dashboard reader: complete
+	// lines, then a final line without a newline if it decodes.
 	var records []conversationRecord
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 256*1024), 10*1024*1024)
-	lineNumber := 0
-
-	for scanner.Scan() {
-		lineNumber++
-		if rec, ok := conversationRecordFromLine(scanner.Bytes(), lineNumber, path, agentLabel); ok {
+	var r shared.IncrementalReader
+	res, err := r.Read(path, nil, func(line []byte, lineNumber int) {
+		if rec, ok := conversationRecordFromLine(line, lineNumber, path, agentLabel); ok {
 			records = append(records, rec)
 		}
+	})
+	if err != nil {
+		return nil
+	}
+	if rec, ok := conversationRecordFromLine(res.Tail, res.TailLine, path, agentLabel); ok {
+		records = append(records, rec)
 	}
 	return mergeStreamingDuplicates(records)
 }
@@ -60,6 +60,14 @@ func parseConversationRecords(path string) []conversationRecord {
 // mergeStreamingDuplicates.
 func conversationRecordFromLine(line []byte, lineNumber int, path, agentLabel string) (conversationRecord, bool) {
 	if len(line) == 0 {
+		return conversationRecord{}, false
+	}
+	// Cheap pre-filter: only assistant entries carry usage, and they make up a
+	// small fraction of the log bytes (user/tool_result lines dominate). Any
+	// line whose "type" is "assistant" must contain the literal token, so
+	// skipping the rest before json.Unmarshal changes no results while
+	// avoiding most of the decode work on multi-GB histories.
+	if !bytes.Contains(line, assistantToken) {
 		return conversationRecord{}, false
 	}
 	var entry jsonlEntry

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Merge upstream main through v0.26.3 (batched telemetry ingest, incremental OpenCode SQLite reads, provider Retry-After backoff, idle CPU reductions). The fork's database-preservation policy is kept: upstream's sole-opener open lock, `-shm` removal and corrupt-DB quarantine are not adopted. Identical limit snapshots are still persisted as separate observations instead of upstream's in-place `occurred_at` touch. OpenCode v2 databases still use a full read per changed fingerprint.
 - Read the Claude Code OAuth token from the macOS Keychain item `Claude Code-credentials` when `~/.claude/.credentials.json` is missing, signed out or expired, so macOS collectors report 5h/7d Claude quotas. Errors name the sources tried and never include token values. No snapshot, SQLite or Hub change.
 - Keep authenticated Claude subscription quotas polling when local session files are unchanged, under the existing adaptive polling schedule.
 - Persist verified unchanged Claude, Codex, OpenCode and DSH observations so successful revalidation advances the durable snapshot time without adding token usage events.
@@ -17,6 +18,58 @@
 
 - Preserve Jev model/day accounting through normalization, SQLite persistence and fresh daemon/Hub reads, including known zero costs, unknown-cost coverage and equal-total CSV corrections.
 - Replace deleted ledger detail with the latest empty snapshot. Bound and allowlist the private accounting payload; invalid detail becomes unavailable with an explicit error. No database migration is required, and unchanged ledger observations retain their last stored timestamp.
+
+## 0.26.3 (2026-11-01)
+
+<!-- Release notes generated using configuration in .github/release.yml at main -->
+
+## What's Changed
+### Dependencies
+* deps(docs): bump follow-redirects from 1.16.1 to 1.16.2 in /docs/site by @dependabot[bot] in https://github.com/janekbaraniewski/openusage/pull/462
+* deps(docs): bump qs from 6.15.2 to 6.15.4 in /docs/site by @dependabot[bot] in https://github.com/janekbaraniewski/openusage/pull/461
+* deps(docs): bump postcss-selector-parser in /docs/site by @dependabot[bot] in https://github.com/janekbaraniewski/openusage/pull/460
+* deps(docs): bump joi from 17.13.8 to 17.13.9 in /docs/site by @dependabot[bot] in https://github.com/janekbaraniewski/openusage/pull/463
+### Other Changes
+* fix(pi): read usage.cost.total from Pi session logs by @devonjones in https://github.com/janekbaraniewski/openusage/pull/435
+* fix(telemetry): only recover the store when this process is the sole opener by @janekbaraniewski in https://github.com/janekbaraniewski/openusage/pull/449
+* refactor(opencode): hoist console RPC regexes to package-level vars by @janekbaraniewski in https://github.com/janekbaraniewski/openusage/pull/447
+* perf(providers): cache OpenRouter generations and Gemini CLI OAuth/loadCodeAssist by @janekbaraniewski in https://github.com/janekbaraniewski/openusage/pull/459
+* fix: cut idle CPU of daemon, statusline and tmux renders by @janekbaraniewski in https://github.com/janekbaraniewski/openusage/pull/450
+* perf: power and efficiency overhaul (#451–#467) by @janekbaraniewski in https://github.com/janekbaraniewski/openusage/pull/467
+* test(tmux): isolate USERPROFILE so Windows tests don't share the cache by @janekbaraniewski in https://github.com/janekbaraniewski/openusage/pull/468
+
+## New Contributors
+* @devonjones made their first contribution in https://github.com/janekbaraniewski/openusage/pull/435
+
+**Full Changelog**: https://github.com/janekbaraniewski/openusage/compare/v0.26.2...v0.26.3
+
+## 0.26.2 (2026-10-26)
+
+<!-- Release notes generated using configuration in .github/release.yml at main -->
+
+## What's Changed
+### Dependencies
+* deps(deps): bump the go-minor-and-patch group with 5 updates by @dependabot[bot] in https://github.com/janekbaraniewski/openusage/pull/425
+* deps(website): bump the website-minor-and-patch group in /website with 4 updates by @dependabot[bot] in https://github.com/janekbaraniewski/openusage/pull/427
+* ci(actions): bump the actions-minor-and-patch group with 6 updates by @dependabot[bot] in https://github.com/janekbaraniewski/openusage/pull/429
+* deps(docs): bump posthog-js from 1.435.6 to 1.438.7 in /docs/site in the docs-minor-and-patch group by @dependabot[bot] in https://github.com/janekbaraniewski/openusage/pull/426
+* deps(deps): bump github.com/klauspost/compress from 1.20.1 to 1.20.3 in the go-minor-and-patch group by @dependabot[bot] in https://github.com/janekbaraniewski/openusage/pull/430
+* deps(docs): bump the docs-minor-and-patch group in /docs/site with 3 updates by @dependabot[bot] in https://github.com/janekbaraniewski/openusage/pull/431
+* deps(website): bump the website-minor-and-patch group in /website with 4 updates by @dependabot[bot] in https://github.com/janekbaraniewski/openusage/pull/432
+* ci(actions): bump the actions-minor-and-patch group with 6 updates by @dependabot[bot] in https://github.com/janekbaraniewski/openusage/pull/433
+* deps(docs): bump follow-redirects from 1.16.0 to 1.16.1 in /docs/site by @dependabot[bot] in https://github.com/janekbaraniewski/openusage/pull/436
+* deps(docs): bump launch-editor from 2.14.1 to 2.14.2 in /docs/site by @dependabot[bot] in https://github.com/janekbaraniewski/openusage/pull/437
+* deps(website): bump the website-minor-and-patch group in /website with 4 updates by @dependabot[bot] in https://github.com/janekbaraniewski/openusage/pull/438
+* deps(docs): bump posthog-js from 1.438.12 to 1.438.19 in /docs/site in the docs-minor-and-patch group by @dependabot[bot] in https://github.com/janekbaraniewski/openusage/pull/439
+* deps(website): bump dompurify from 3.4.16 to 3.4.17 in /website by @dependabot[bot] in https://github.com/janekbaraniewski/openusage/pull/441
+* deps(docs): bump undici from 7.30.0 to 7.30.1 in /docs/site by @dependabot[bot] in https://github.com/janekbaraniewski/openusage/pull/442
+* deps(docs): bump dompurify from 3.4.16 to 3.4.17 in /docs/site by @dependabot[bot] in https://github.com/janekbaraniewski/openusage/pull/444
+* deps(docs): bump fast-uri from 3.1.8 to 3.1.9 in /docs/site by @dependabot[bot] in https://github.com/janekbaraniewski/openusage/pull/443
+* ci(actions): bump the actions-minor-and-patch group with 4 updates by @dependabot[bot] in https://github.com/janekbaraniewski/openusage/pull/440
+* deps(docs): bump body-parser from 1.20.6 to 1.20.9 in /docs/site by @dependabot[bot] in https://github.com/janekbaraniewski/openusage/pull/445
+
+
+**Full Changelog**: https://github.com/janekbaraniewski/openusage/compare/v0.26.1...v0.26.2
 
 ## 0.26.1 (2026-10-10)
 

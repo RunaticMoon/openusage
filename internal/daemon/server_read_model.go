@@ -37,7 +37,7 @@ func (s *Service) disabledReadModelAccounts() map[string]bool {
 	if s.readModelDisabledAccounts != nil {
 		return s.readModelDisabledAccounts()
 	}
-	return DisabledAccountsFromConfig()
+	return s.disabledAccounts()
 }
 
 func shouldRefreshCachedReadModel(cachedAt time.Time, cachedVersion, currentVersion uint64, now time.Time) bool {
@@ -118,7 +118,7 @@ func (s *Service) readModelCacheLoopEnabled() bool {
 }
 
 func (s *Service) refreshReadModelCacheFromConfig(ctx context.Context) {
-	req, err := BuildReadModelRequestFromConfig()
+	req, _, err := s.cachedReadModelRequest(ctx)
 	if err != nil {
 		if s.shouldLog("read_model_cache_config_error", 15*time.Second) {
 			s.warnf("read_model_cache_config_error", "error=%v", err)
