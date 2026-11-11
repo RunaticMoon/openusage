@@ -23,9 +23,13 @@ func (i *QuotaSnapshotIngestor) Ingest(ctx context.Context, snaps map[string]cor
 		return nil
 	}
 	reqs := BuildLimitSnapshotRequests(snaps)
-	for _, req := range reqs {
-		if _, err := i.store.Ingest(ctx, req); err != nil {
-			return fmt.Errorf("ingest limit snapshot (%s/%s): %w", req.ProviderID, req.AccountID, err)
+	// Identical quota values are still distinct verified observations (see
+	// docs/fork/quota-freshness.md), so every snapshot is ingested rather than
+	// moving an earlier row's occurred_at forward.
+	for idx, outcome := range i.store.IngestBatch(ctx, reqs) {
+		if outcome.Err != nil {
+			req := reqs[idx]
+			return fmt.Errorf("ingest limit snapshot (%s/%s): %w", req.ProviderID, req.AccountID, outcome.Err)
 		}
 	}
 	return nil

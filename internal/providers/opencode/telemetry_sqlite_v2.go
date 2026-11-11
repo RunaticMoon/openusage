@@ -2,7 +2,6 @@ package opencode
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -26,7 +25,7 @@ var (
 // OpenCode v2.0.32 and v2.1.1 store assistant steps in session_message, with
 // their discriminator and identity in columns rather than inside data JSON.
 // See anomalyco/opencode packages/core/src/session/sql.ts at those tags.
-func identifySQLiteSchema(ctx context.Context, db *sql.DB) (string, error) {
+func identifySQLiteSchema(ctx context.Context, db sqliteQuerier) (string, error) {
 	v2, err := sqliteTableExists(ctx, db, "session_message")
 	if err != nil {
 		return "", fmt.Errorf("inspect opencode schema: %w", err)
@@ -82,7 +81,7 @@ func identifySQLiteSchema(ctx context.Context, db *sql.DB) (string, error) {
 	return schema, nil
 }
 
-func collectSQLiteV2Events(ctx context.Context, db *sql.DB, dbPath string, performanceEnabled ...bool) ([]shared.TelemetryEvent, error) {
+func collectSQLiteV2Events(ctx context.Context, db sqliteQuerier, dbPath string, performanceEnabled ...bool) ([]shared.TelemetryEvent, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT m.id, m.session_id, m.time_created, m.time_updated, m.data, COALESCE(s.directory, '')
 		FROM session_message m

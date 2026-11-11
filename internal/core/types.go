@@ -59,6 +59,11 @@ type UsageSnapshot struct {
 	HourlySeries map[string][]TimePoint `json:"hourly_series,omitempty"` // observed usage by UTC hour; Date is an RFC3339 bucket start
 	Message      string                 `json:"message,omitempty"`       // human-readable summary
 	Performance  *PerformanceSnapshot   `json:"performance,omitempty"`   // optional log-derived response throughput
+
+	// NextPollNotBefore asks the poller not to fetch this account again
+	// before the given time (e.g. from an HTTP Retry-After header on a 429 or
+	// 5xx). Zero means no provider-imposed delay.
+	NextPollNotBefore time.Time `json:"next_poll_not_before,omitzero"`
 }
 
 func NewUsageSnapshot(providerID, accountID string) UsageSnapshot {

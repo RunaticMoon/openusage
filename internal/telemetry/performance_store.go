@@ -66,20 +66,14 @@ func performanceKey(r core.PerformanceRequest) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func (s *Store) ingestPerformanceOnly(ctx context.Context, req IngestRequest) (IngestResult, error) {
+// ingestPerformanceOnly runs inside the caller's ingest transaction; the store
+// uses a single connection, so opening a second transaction would deadlock.
+func (s *Store) ingestPerformanceOnly(ctx context.Context, tx *sql.Tx, req IngestRequest) (IngestResult, error) {
 	if !s.performanceEnabled.Load() || req.Performance == nil {
 		return IngestResult{Status: "accepted", Deduped: true}, nil
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return IngestResult{}, err
-	}
-	defer tx.Rollback()
 	changed, err := s.upsertPerformance(ctx, tx, req, s.now().UTC())
 	if err != nil {
-		return IngestResult{}, err
-	}
-	if err := tx.Commit(); err != nil {
 		return IngestResult{}, err
 	}
 	return IngestResult{Status: "accepted", Deduped: true, Updated: changed}, nil

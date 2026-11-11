@@ -185,7 +185,11 @@ func (s *Store) Init(ctx context.Context) error {
 			changed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 		);`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_event_changes_event_op ON usage_event_changes(event_id, operation);`,
-		`CREATE INDEX IF NOT EXISTS idx_usage_event_changes_event ON usage_event_changes(event_id, seq);`,
+		// idx_usage_event_changes_event (event_id, seq) was never used: every
+		// reader scans by seq (the rowid) and the triggers' INSERT OR IGNORE
+		// probes the (event_id, operation) unique index above. Dropped to save
+		// its write cost and ~37 MB on large installs.
+		`DROP INDEX IF EXISTS idx_usage_event_changes_event;`,
 		`CREATE TRIGGER IF NOT EXISTS trg_usage_events_change_insert
 			AFTER INSERT ON usage_events BEGIN
 				INSERT OR IGNORE INTO usage_event_changes(event_id, operation) VALUES (NEW.event_id, 'insert');
@@ -241,7 +245,8 @@ func (s *Store) Init(ctx context.Context) error {
 			semantics TEXT NOT NULL,
 			PRIMARY KEY (provider_id, account_id, metric_key, observed_at)
 		);`,
-		`CREATE INDEX IF NOT EXISTS idx_balance_obs_lookup ON balance_observations(provider_id, account_id, metric_key, observed_at);`,
+		// idx_balance_obs_lookup duplicated the primary key column-for-column.
+		`DROP INDEX IF EXISTS idx_balance_obs_lookup;`,
 		// Daily downsample of usage_events: per-day aggregates kept long-term so
 		// raw per-event rows past the hot window can be pruned without losing the
 		// shape of history. See docs/TELEMETRY_TIERED_RETENTION_DESIGN.md.
@@ -335,6 +340,14 @@ func (s *Store) RunMigrations(ctx context.Context) error {
 					  AND ABS(julianday(e.occurred_at) - julianday(r.ingested_at)) < 0.00002
 				)`,
 		},
+		{
+			// Balance observations used to be recorded for every metric with a
+			// lifetime window, including ~1,100 token/session counters per
+			// local agent. Only the credit-priority keys are ever read
+			// (PrimaryCreditMetric); money-unit rows are kept for future use.
+			name: "drop_non_money_balance_observations",
+			sql:  dropNonMoneyBalanceObservationsSQL(),
+		},
 	}
 
 	for _, r := range repairs {
@@ -359,9 +372,32 @@ func (s *Store) RunMigrations(ctx context.Context) error {
 }
 
 func (s *Store) Ingest(ctx context.Context, req IngestRequest) (IngestResult, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return IngestResult{}, fmt.Errorf("telemetry: begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	ex := newIngestExec(tx)
+	defer ex.close()
+	result, err := s.ingestInTx(ctx, ex, req)
+	if err != nil {
+		return IngestResult{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return IngestResult{}, fmt.Errorf("telemetry: commit tx: %w", err)
+	}
+	return result, nil
+}
+
+// ingestInTx writes one event inside an open transaction: it either merges the
+// request into the event already stored under its dedup key or inserts a new
+// raw + canonical pair. It never commits; Ingest and IngestBatch own the
+// transaction boundary.
+func (s *Store) ingestInTx(ctx context.Context, ex *ingestExec, req IngestRequest) (IngestResult, error) {
 	norm := normalizeRequest(req, s.now().UTC())
 	if norm.PerformanceOnly {
-		return s.ingestPerformanceOnly(ctx, norm)
+		return s.ingestPerformanceOnly(ctx, ex.tx, norm)
 	}
 	payloadBytes, err := marshalPayload(norm.Payload)
 	if err != nil {
@@ -380,27 +416,18 @@ func (s *Store) Ingest(ctx context.Context, req IngestRequest) (IngestResult, er
 	dedupKey := BuildDedupKey(norm)
 	payloadHash := sha256.Sum256(payloadBytes)
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return IngestResult{}, fmt.Errorf("telemetry: begin tx: %w", err)
-	}
-	defer tx.Rollback()
-
-	performanceUpdated, err := s.upsertPerformance(ctx, tx, norm, now)
+	performanceUpdated, err := s.upsertPerformance(ctx, ex.tx, norm, now)
 	if err != nil {
 		return IngestResult{}, err
 	}
-	existing, found, err := findEventByDedupKey(ctx, tx, dedupKey)
+	existing, found, err := findEventByDedupKey(ctx, ex, dedupKey)
 	if err != nil {
 		return IngestResult{}, fmt.Errorf("telemetry: lookup dedup key: %w", err)
 	}
 	if found {
-		updated, enrichErr := enrichEventByDedupKey(ctx, tx, dedupKey, norm, now)
+		updated, enrichErr := enrichEventByDedupKey(ctx, ex, dedupKey, norm, now)
 		if enrichErr != nil {
 			return IngestResult{}, fmt.Errorf("telemetry: enrich dedup event: %w", enrichErr)
-		}
-		if commitErr := tx.Commit(); commitErr != nil {
-			return IngestResult{}, fmt.Errorf("telemetry: commit dedup tx: %w", commitErr)
 		}
 		return IngestResult{
 			Status:     "accepted",
@@ -411,12 +438,7 @@ func (s *Store) Ingest(ctx context.Context, req IngestRequest) (IngestResult, er
 		}, nil
 	}
 
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO usage_raw_events (
-			raw_event_id, ingested_at, source_system, source_channel, source_schema_version,
-			source_payload, source_payload_hash, workspace_id, agent_session_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`,
+	if _, err := ex.exec(ctx, sqlInsertRawEvent,
 		rawEventID,
 		now.Format(time.RFC3339Nano),
 		string(norm.SourceSystem),
@@ -430,15 +452,7 @@ func (s *Store) Ingest(ctx context.Context, req IngestRequest) (IngestResult, er
 		return IngestResult{}, fmt.Errorf("telemetry: insert raw event: %w", err)
 	}
 
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO usage_events (
-			event_id, occurred_at, provider_id, agent_name, account_id, workspace_id, session_id,
-			turn_id, message_id, tool_call_id, event_type, model_raw, model_canonical,
-			model_lineage_id, input_tokens, output_tokens, reasoning_tokens, cache_read_tokens,
-			cache_write_tokens, total_tokens, cost_usd, requests, tool_name, status, dedup_key,
-			raw_event_id, normalization_version
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`,
+	_, err = ex.exec(ctx, sqlInsertCanonicalEvent,
 		eventID,
 		norm.OccurredAt.Format(time.RFC3339Nano),
 		nullable(norm.ProviderID),
@@ -469,19 +483,16 @@ func (s *Store) Ingest(ctx context.Context, req IngestRequest) (IngestResult, er
 	)
 	if err != nil {
 		if isUniqueConstraintError(err, "usage_events.dedup_key") {
-			existing, found, lookupErr := findEventByDedupKey(ctx, tx, dedupKey)
+			existing, found, lookupErr := findEventByDedupKey(ctx, ex, dedupKey)
 			if lookupErr != nil {
 				return IngestResult{}, fmt.Errorf("telemetry: lookup dedup event: %w", lookupErr)
 			}
 			if !found {
 				return IngestResult{}, fmt.Errorf("telemetry: dedup event disappeared for key %q", dedupKey)
 			}
-			updated, enrichErr := enrichEventByDedupKey(ctx, tx, dedupKey, norm, now)
+			updated, enrichErr := enrichEventByDedupKey(ctx, ex, dedupKey, norm, now)
 			if enrichErr != nil {
 				return IngestResult{}, fmt.Errorf("telemetry: enrich dedup event: %w", enrichErr)
-			}
-			if commitErr := tx.Commit(); commitErr != nil {
-				return IngestResult{}, fmt.Errorf("telemetry: commit dedup tx: %w", commitErr)
 			}
 			return IngestResult{
 				Status:     "accepted",
@@ -494,10 +505,6 @@ func (s *Store) Ingest(ctx context.Context, req IngestRequest) (IngestResult, er
 		return IngestResult{}, fmt.Errorf("telemetry: insert canonical event: %w", err)
 	}
 
-	if err := tx.Commit(); err != nil {
-		return IngestResult{}, fmt.Errorf("telemetry: commit tx: %w", err)
-	}
-
 	return IngestResult{
 		Status:     "accepted",
 		Deduped:    false,
@@ -506,18 +513,37 @@ func (s *Store) Ingest(ctx context.Context, req IngestRequest) (IngestResult, er
 	}, nil
 }
 
+const sqlInsertRawEvent = `
+	INSERT INTO usage_raw_events (
+		raw_event_id, ingested_at, source_system, source_channel, source_schema_version,
+		source_payload, source_payload_hash, workspace_id, agent_session_id
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+`
+
+const sqlInsertCanonicalEvent = `
+	INSERT INTO usage_events (
+		event_id, occurred_at, provider_id, agent_name, account_id, workspace_id, session_id,
+		turn_id, message_id, tool_call_id, event_type, model_raw, model_canonical,
+		model_lineage_id, input_tokens, output_tokens, reasoning_tokens, cache_read_tokens,
+		cache_write_tokens, total_tokens, cost_usd, requests, tool_name, status, dedup_key,
+		raw_event_id, normalization_version
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`
+
 type storedDedupEventRef struct {
 	EventID    string
 	RawEventID string
 }
 
-func findEventByDedupKey(ctx context.Context, tx *sql.Tx, dedupKey string) (storedDedupEventRef, bool, error) {
+func findEventByDedupKey(ctx context.Context, ex *ingestExec, dedupKey string) (storedDedupEventRef, bool, error) {
 	var ref storedDedupEventRef
-	err := tx.QueryRowContext(
-		ctx,
+	row, err := ex.queryRow(ctx,
 		`SELECT event_id, raw_event_id FROM usage_events WHERE dedup_key = ? LIMIT 1`,
 		dedupKey,
-	).Scan(&ref.EventID, &ref.RawEventID)
+	)
+	if err == nil {
+		err = row.Scan(&ref.EventID, &ref.RawEventID)
+	}
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return storedDedupEventRef{}, false, nil
@@ -557,9 +583,9 @@ type storedCanonicalEvent struct {
 	Status              string
 }
 
-func loadCanonicalEventByDedupKey(ctx context.Context, tx *sql.Tx, dedupKey string) (storedCanonicalEvent, error) {
+func loadCanonicalEventByDedupKey(ctx context.Context, ex *ingestExec, dedupKey string) (storedCanonicalEvent, error) {
 	var row storedCanonicalEvent
-	err := tx.QueryRowContext(ctx, `
+	r, err := ex.queryRow(ctx, `
 		SELECT
 			e.event_id,
 			e.provider_id,
@@ -589,7 +615,11 @@ func loadCanonicalEventByDedupKey(ctx context.Context, tx *sql.Tx, dedupKey stri
 		JOIN usage_raw_events r ON r.raw_event_id = e.raw_event_id
 		WHERE e.dedup_key = ?
 		LIMIT 1
-	`, dedupKey).Scan(
+	`, dedupKey)
+	if err != nil {
+		return row, err
+	}
+	err = r.Scan(
 		&row.EventID,
 		&row.ProviderID,
 		&row.AccountID,
@@ -619,8 +649,8 @@ func loadCanonicalEventByDedupKey(ctx context.Context, tx *sql.Tx, dedupKey stri
 // enrichEventByDedupKey merges duplicate canonical fields with source priority.
 // Hook payloads normally take precedence. Explicitly supported mutable source
 // snapshots replace earlier values according to their monotonic revision.
-func enrichEventByDedupKey(ctx context.Context, tx *sql.Tx, dedupKey string, norm IngestRequest, observedAt time.Time) (bool, error) {
-	current, err := loadCanonicalEventByDedupKey(ctx, tx, dedupKey)
+func enrichEventByDedupKey(ctx context.Context, ex *ingestExec, dedupKey string, norm IngestRequest, observedAt time.Time) (bool, error) {
+	current, err := loadCanonicalEventByDedupKey(ctx, ex, dedupKey)
 	if err != nil {
 		return false, err
 	}
@@ -712,15 +742,15 @@ func enrichEventByDedupKey(ctx context.Context, tx *sql.Tx, dedupKey string, nor
 		// Coalesce to one update row while allocating a fresh sequence. INSERT
 		// OR IGNORE in the existing triggers otherwise hides later revisions
 		// from incremental readers that already consumed the first update.
-		if _, err := tx.ExecContext(ctx, `DELETE FROM usage_event_changes WHERE event_id = ? AND operation = 'update'`, current.EventID); err != nil {
+		if _, err := ex.exec(ctx, `DELETE FROM usage_event_changes WHERE event_id = ? AND operation = 'update'`, current.EventID); err != nil {
 			return false, err
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO usage_event_changes(event_id, operation) VALUES (?, 'update')`, current.EventID); err != nil {
+		if _, err := ex.exec(ctx, `INSERT INTO usage_event_changes(event_id, operation) VALUES (?, 'update')`, current.EventID); err != nil {
 			return false, err
 		}
 	}
 	if rawChanged {
-		if _, err := tx.ExecContext(ctx, `UPDATE usage_raw_events SET source_system = ?, source_channel = ?, source_schema_version = ?, source_payload = ?, source_payload_hash = ?, ingested_at = ? WHERE raw_event_id = ?`,
+		if _, err := ex.exec(ctx, `UPDATE usage_raw_events SET source_system = ?, source_channel = ?, source_schema_version = ?, source_payload = ?, source_payload_hash = ?, ingested_at = ? WHERE raw_event_id = ?`,
 			string(norm.SourceSystem), string(norm.SourceChannel), norm.SourceSchemaVersion, string(payload), payloadHash, observedAt.Format(time.RFC3339Nano), current.RawEventID); err != nil {
 			return false, err
 		}
@@ -728,7 +758,7 @@ func enrichEventByDedupKey(ctx context.Context, tx *sql.Tx, dedupKey string, nor
 	if !canonicalChanged {
 		return incomingAuthoritative, nil
 	}
-	_, err = tx.ExecContext(ctx, `
+	_, err = ex.exec(ctx, `
 		UPDATE usage_events
 		SET
 			provider_id = ?,
@@ -1283,7 +1313,15 @@ func (s *Store) PruneUsageEventChangesToSize(ctx context.Context, targetRows, re
 		if budget > chunkSize {
 			budget = chunkSize
 		}
-		cutoffRetain := current - retainTail
+		// seq is AUTOINCREMENT and never restarts, so the tail must be
+		// measured from MAX(seq), not from the row count: comparing a count
+		// with a sequence number left cutoffRetain below MIN(seq) on any
+		// long-lived DB and the log never shrank.
+		var maxSeq int64
+		if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) FROM usage_event_changes`).Scan(&maxSeq); err != nil {
+			return totalDeleted, false, fmt.Errorf("telemetry: max usage event change seq: %w", err)
+		}
+		cutoffRetain := maxSeq - retainTail
 		if cutoffRetain < 0 {
 			cutoffRetain = 0
 		}
